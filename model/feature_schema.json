@@ -1,0 +1,262 @@
+{
+  "features": [
+    {
+      "name": "age",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "customer_tenure_months",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "multi_policy_flag",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "num_policies",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "renewal_month",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "current_premium",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "premium_last_year",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "premium_change_pct",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "num_price_increases_last_3y",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "coverage_amount",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "premium_to_coverage_ratio",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "autopay_enabled",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "late_payment_count_12m",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "missed_payment_flag",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "payment_method_change_flag",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "num_claims_12m",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "num_approved_claims_12m",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "num_rejected_claims_12m",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "num_pending_claims_12m",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "avg_claim_amount",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "total_claim_amount_12m",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "total_payout_amount_12m",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "payout_ratio_12m",
+      "dtype": "float64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "avg_settlement_time_days",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "days_since_last_claim",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "num_contacts_12m",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "complaint_flag",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "complaint_resolution_days",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "quote_requested_flag",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "coverage_downgrade_flag",
+      "dtype": "int64",
+      "kind": "numerical",
+      "required": true,
+      "allowed_values": null
+    },
+    {
+      "name": "region_name",
+      "dtype": "object",
+      "kind": "categorical",
+      "required": true,
+      "allowed_values": [
+        "Auckland",
+        "Bay of Plenty",
+        "Canterbury",
+        "Manawatu-Whanganui",
+        "Otago",
+        "Waikato",
+        "Wellington"
+      ]
+    },
+    {
+      "name": "marital_status",
+      "dtype": "object",
+      "kind": "categorical",
+      "required": true,
+      "allowed_values": [
+        "Married",
+        "Single"
+      ]
+    },
+    {
+      "name": "policy_type",
+      "dtype": "object",
+      "kind": "categorical",
+      "required": true,
+      "allowed_values": [
+        "Auto",
+        "Health",
+        "Home",
+        "Life",
+        "Travel"
+      ]
+    },
+    {
+      "name": "payment_frequency",
+      "dtype": "object",
+      "kind": "categorical",
+      "required": true,
+      "allowed_values": [
+        "Annual",
+        "Monthly"
+      ]
+    }
+  ]
+}

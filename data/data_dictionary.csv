@@ -1,0 +1,41 @@
+column,description
+customer_id,Unique customer identifier
+as_of_date,Reference date for features/label
+region_name,Customer region
+age,Customer age (years)
+age_band,Age band bucket
+marital_status,Marital status
+customer_tenure_months,Tenure with insurer in months
+multi_policy_flag,"1 if customer holds multiple policies, else 0"
+num_policies,Number of policies held by customer (synthetic)
+policy_type,Primary policy type
+renewal_month,Policy renewal month (1-12)
+current_premium,Current annualised premium amount (NZD)
+premium_last_year,Prior year annualised premium amount (NZD)
+premium_change_pct,Premium change percentage vs last year
+num_price_increases_last_3y,Count of premium increases in last 3 years (synthetic)
+coverage_amount,Coverage amount / sum insured (NZD)
+premium_to_coverage_ratio,Premium divided by coverage amount
+payment_frequency,Payment frequency (Monthly/Annual)
+autopay_enabled,"1 if autopay enabled, else 0"
+late_payment_count_12m,Count of late payments in last 12 months
+missed_payment_flag,"1 if missed payments flag (>=4 late payments), else 0"
+payment_method_change_flag,"1 if payment method changed recently, else 0"
+num_claims_12m,Number of claims in last 12 months
+num_approved_claims_12m,Number of approved claims in last 12 months
+num_rejected_claims_12m,Number of rejected claims in last 12 months
+num_pending_claims_12m,Number of pending claims in last 12 months
+avg_claim_amount,Average claim amount (NZD)
+total_claim_amount_12m,Total claim amount in last 12 months (NZD)
+total_payout_amount_12m,Total payout amount in last 12 months (NZD)
+payout_ratio_12m,Total payout divided by total claim amount (last 12 months)
+avg_settlement_time_days,Average settlement time for claims (days)
+days_since_last_claim,Days since last claim (proxy recency)
+num_contacts_12m,Number of customer contacts in last 12 months
+complaint_flag,"1 if complaint lodged, else 0"
+complaint_resolution_days,Complaint resolution time in days (0 if no complaint)
+quote_requested_flag,"1 if customer requested a quote (proxy shopping), else 0"
+coverage_downgrade_flag,"1 if customer downgraded coverage, else 0"
+churn_flag,"Target label: 1 = churned at renewal, 0 = retained"
+churn_type,Heuristic churn reason (synthetic)
+churn_probability_true,Underlying churn probability used to generate labels (drop before upload if desired)

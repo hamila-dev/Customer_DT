@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Customer Twin · Insurise</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">IN</span>
+        <div class="brand-text">
+          <span class="brand-name">Insurise</span>
+          <span class="brand-sub">Customer Twin</span>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="#/dashboard" data-route="dashboard">
+          <span class="nav-icon">◧</span> Dashboard
+        </a>
+        <a href="#/customers" data-route="customers">
+          <span class="nav-icon">☰</span> Customers
+        </a>
+        <a href="#/twin" data-route="twin">
+          <span class="nav-icon">◎</span> Digital Twin
+        </a>
+        <a href="#/simulation" data-route="simulation">
+          <span class="nav-icon">◇</span> Simulation
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="gen-status" id="gen-status">
+          <span class="dot dot-off" id="gen-dot"></span>
+          <span id="gen-label">Event generator: stopped</span>
+        </div>
+        <div class="sidebar-note">Prototype · public dataset</div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div class="topbar-title" id="page-title">Dashboard</div>
+        <div class="topbar-actions">
+          <span class="model-pill" id="model-pill">checking model…</span>
+        </div>
+      </header>
+      <div class="view" id="view"></div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

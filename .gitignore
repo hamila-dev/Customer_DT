@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# uv
+.uv-cache/
+
+# Local runtime persistence (regenerated on first run - see bootstrap.py)
+storage/
+
+# Note: model/churn_model.joblib, model/preprocessing.joblib,
+# model/model_metadata.json, and model/feature_schema.json are
+# intentionally NOT ignored - they are fixed, provided artifacts that are
+# part of this repository (inference only, never retrained here). See
+# model/README.md.
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+
+*.joblib
