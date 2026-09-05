@@ -1,6 +1,6 @@
 # 👥 Customer Twin — Insurise MVP
 
-A working prototype **Customer Digital Twin** for Insurise: a live, per-customer virtual state that reacts to events, a trained Random Forest churn model that scores it, a Recommendation Engine that turns risk into administrator actions, and a Digital Twin Engine that clones customer states to simulate hypothetical futures—deterministically or via Monte Carlo—without modifying production data.
+A working prototype **Customer Digital Twin** for Insurise: a live, per-customer virtual state that reacts to events, a trained Random Forest churn model that scores it, a Recommendation Engine that turns risk into administrator actions, and a Digital Twin Engine that maintains an auditable transition history, reconstructs past customer states, and clones customer states to simulate hypothetical futures—deterministically or via Monte Carlo—without modifying production data. Monte Carlo is currently available through the manual simulation endpoint; automatic background scoring and cached Monte Carlo results are not yet implemented in this checkout.
 
 > **Prototype Status:** This system uses a synthetic insurance policyholder churn dataset (see `docs/dataset-mapping.md`) 
 >
@@ -29,6 +29,8 @@ At any given moment, a customer is represented by a state `S_t` (containing prem
 
 The Digital Twin Engine maintains this state and synchronizes it with incoming events. It can also clone the state to explore hypothetical scenarios (`S'_t = T(S_t, theta)`) without mutating the persistent state.
 
+Every real transition is also recorded in `storage/event_log.json` with the event envelope, before/after state snapshots, processing time, and model version metadata. See `twin_engine/synchronization/synchronizer.py` and `twin_engine/state/time_travel.py` for the audit and reconstruction paths.
+
 Refer to `docs/architecture.md` for the full component diagram and module map. The high-level data flow is structured as follows:
 
 ```mermaid
@@ -51,8 +53,21 @@ graph TD
 * **Twin State Store** (`twin_engine/state/`): Local JSON-persisted repository acting as the single source of truth for all current digital states.
 * **Event Transition Handler** (`twin_engine/events/transition_handler.py`): Implements transition logic `S_(t+1) = f(S_t, E_t)` for the 7 dataset-grounded event types.
 * **State Synchronizer** (`twin_engine/synchronization/`): Coordinates sequential event application, persistence, and risk recalculation.
+  Each `S_t -> S_(t+1)` transition is appended to the audit log with `prev_state`, `new_state`, `processing_time_ms`, and `model_version`, not only the triggering event.
 * **Scenario Transformer** (`twin_engine/simulation/scenario_transformer.py`): Clones customer states and applies speculative changes for simulations without persisting them.
 * **Monte Carlo Engine** (`twin_engine/simulation/monte_carlo.py`): Simulates speculative states under configurable uncertainty envelopes to project churn probability distributions.
+  The current implementation runs on manual request; there is no `monte_carlo_store.py`, automatic post-event trigger, or cached-result endpoint in this checkout.
+* **Time Travel** (`twin_engine/state/time_travel.py`): Reconstructs a customer's state at or before an ISO 8601 timestamp from enriched transition-log snapshots.
+
+### API Endpoints
+
+The FastAPI app exposes the following v2 observability and simulation routes in addition to the existing customer, event, and generator routes:
+
+* `GET /api/customers/{customer_id}/trace`: returns enriched transition records for one customer.
+* `GET /api/customers/{customer_id}/state-at?timestamp=...`: returns the reconstructed state at a requested timestamp.
+* `POST /api/customers/{customer_id}/simulate`: runs a deterministic what-if simulation.
+* `POST /api/customers/{customer_id}/simulate/monte-carlo`: runs a manual Monte Carlo simulation.
+* `GET /api/event-generator/status`, `POST /api/event-generator/start`, and `POST /api/event-generator/stop`: control the background event generator. Its controls are part of the single static portal served from `frontend/`; there is no separate event-generation page route.
 
 ### Risk Intelligence
 * **Predictor Module** (`risk_intelligence/`): Loads the pre-trained Random Forest model and preprocessing pipeline. Returns a `503 Service Unavailable` if model artifacts are missing, and a `422 Unprocessable Entity` (`FeatureMappingError`) on feature schema drift.
@@ -70,7 +85,8 @@ graph TD
 ```
 customer-twin/
 ├── twin_engine/
-│   ├── state/             # State definitions and local JSON storage
+│   ├── state/             # State definitions, storage, and time travel
+│   │   └── time_travel.py # Reconstructs state from enriched transition logs
 │   ├── events/            # Event models, transition handler, and generator
 │   ├── synchronization/   # Coordination of event application and persistence
 │   └── simulation/        # Scenario transformer and Monte Carlo engines
@@ -80,6 +96,8 @@ customer-twin/
 ├── data/                  # Synthetic churn dataset and data dictionary
 ├── api/                   # FastAPI route definitions and schemas
 ├── frontend/              # Static HTML/CSS/JS files for the admin portal
+├── tests/                 # Automated simulation-isolation tests
+│   └── test_scenario_isolation.py
 ├── docs/                  # Detailed architectural and module documentation
 ├── bootstrap.py           # Populates initial state store from the raw CSV
 ├── config.py              # Central application config and business assumptions
@@ -159,8 +177,10 @@ The background event generator simulates real-time client events (e.g., payments
 1. **Observe Initial State:** Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/), navigate to **Customers**, select a customer, and open their **Digital Twin** view. Note their current churn probability, risk level, and top drivers.
 2. **Apply Live Events:** Click **Start Generator** (or post an event manually via `POST /api/events`, e.g., a `payment_missed` event). Watch the Twin state, event timeline, and risk score update in real time.
 3. **Run Speculative Simulations:** Go to **Simulation**, select the customer, choose the `premium_changed` scenario, set a change percentage (e.g., `0.15` for a $+15\%$ increase), and run the **deterministic** simulation. Note the change in risk profile without modifying the real stored state.
-4. **Run Monte Carlo Analysis:** On the same simulation page, execute a **Monte Carlo simulation** to view probability distribution statistics (mean, median, P10, P90, std-dev) and a distribution histogram.
-5. **Mitigate Risk:** Review the EV calculation details on the Digital Twin dashboard to identify the best action to take.
+4. **Inspect the Audit Trace:** Open `GET /api/customers/{id}/trace` to see the triggering event, before/after snapshots, model version, and processing time for each logged transition.
+5. **Reconstruct a Past State:** Choose a timestamp between two logged events and call `GET /api/customers/{id}/state-at?timestamp=...` to inspect the customer's state at that point in the timeline.
+6. **Run Monte Carlo Analysis:** On the Simulation view, execute the manual Monte Carlo endpoint to view probability distribution statistics (mean, median, P10, P90, std-dev) and a distribution histogram. The current code does not automatically run or cache this result after each event.
+7. **Mitigate Risk:** Review the EV calculation details on the Digital Twin dashboard to identify the best action to take.
 
 ---
 
@@ -171,6 +191,7 @@ The system was verified end-to-end against the following checks:
 * **Inference Execution:** Validated that single-customer churn probability predictions are returned within standard ranges.
 * **State Transitions:** Verified state mutations for all 7 event types (e.g., `payment_missed` properly updates flags, and risk score changes dynamically).
 * **Speculative Clones:** Confirmed that simulations run on exact clones and do not modify or persist changes to the stored state.
+* **Automated Isolation Test:** `tests/test_scenario_isolation.py` verifies that a scenario leaves the real stored Twin byte-for-byte unchanged and returns an independent clone.
 * **Monte Carlo Variance:** Confirmed outputs (mean, median, P10, P90, std-dev) follow statistical assumptions over 80+ trials.
 * **Ranked Recommendations:** Verified expected value calculations and action rankings.
 * **Robust Error Boundaries:** Tested HTTP `422` outputs on schema drift and `503` outputs on missing model files.
@@ -183,6 +204,7 @@ The system was verified end-to-end against the following checks:
 * **Twin-to-Model Mapping:** See `docs/dataset-mapping.md` for the mapping of raw dataset features to the twin state schema.
 * **Event-to-Twin Mapping:** See `docs/event-model.md` for the exact schema modifications associated with the 7 supported events.
 * **Simulation Configuration:** See `docs/simulation.md` for details on deterministic and Monte Carlo parameters.
+* **Transition Audit and Time Travel:** See `twin_engine/synchronization/synchronizer.py` and `twin_engine/state/time_travel.py` for enriched event logging and historical state reconstruction.
 * **Model Deserialization:** `risk_intelligence/predictor.py` handles runtime loading of the model and preprocessor via `joblib.load`.
 
 ---
@@ -192,7 +214,9 @@ The system was verified end-to-end against the following checks:
 ### Known Limitations
 * **Synthetic Dataset:** Data distributions reflect synthetic patterns and are not production-grade.
 * **No Real-Time Broker (Kafka):** Events are processed synchronously in-memory rather than via a distributed stream.
-* **Local Persistence:** The application uses flat JSON file storage (`storage/twin_states.json`) and is not thread-safe for high concurrent write volumes.
+* **Local Persistence:** The application uses flat JSON file storage (`storage/twin_states.json`) and is not thread-safe for high concurrent write volumes. The enriched transition log stores full before/after snapshots, so `storage/event_log.json` grows with every event.
+* **Linear Time-Travel Lookup:** Historical reconstruction scans the transition log linearly for each request; it is not indexed.
+* **Manual Monte Carlo Only:** Monte Carlo remains an on-demand endpoint. Automatic post-event execution, per-customer result caching, `monte_carlo_store.py`, and a cached-result endpoint are not present yet.
 * **Mock Interventions:** Action effects, costs, and value metrics are placeholders.
 * **Authentication:** No authentication layer is present (suitable for local MVP demonstration only).
 
