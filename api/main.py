@@ -1,17 +1,8 @@
-"""
-FastAPI backend for the Customer Digital Twin MVP.
-
-Handlers here are intentionally thin - all business logic lives in
-twin_engine/, risk_intelligence/, and recommendation_engine/. This module
-only: parses requests, calls the right module, and serializes responses.
-
-API endpoints are served under /api/* so the same FastAPI app can also
-serve the simple static frontend at "/" (see the StaticFiles mount at the
-bottom of this file).
-"""
+"""FastAPI handlers for the Twin, risk, recommendation, and simulation APIs."""
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import List
 
@@ -56,28 +47,14 @@ app.add_middleware(
 
 @app.exception_handler(FeatureMappingError)
 async def feature_mapping_error_handler(request, exc: FeatureMappingError):
-    """
-    Raised by risk_intelligence.feature_mapper when a Twin state cannot be
-    mapped to the model's required feature schema (a missing feature or an
-    out-of-schema categorical value) - a distinct failure mode from "no
-    model loaded" (ModelNotAvailableError -> 503). This is a client-facing
-    422: the request/state itself is incompatible with the model's schema,
-    not a server availability problem.
-    """
+    """Return 422 when a Twin cannot satisfy the model feature schema."""
     from fastapi.responses import JSONResponse
 
     return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 def _risk_recalc_callback(customer_id: str, state) -> None:
-    """
-    Wired into the StateSynchronizer so that every event, however it
-    arrives (POST /events or the local Event Generator), triggers a fresh
-    risk recalculation. For the MVP this simply re-scores on demand when
-    read (see get_customer_risk); this callback is where a push-based
-    notification (e.g. WebSocket) would hook in later without changing the
-    Twin Engine.
-    """
+    """Re-score persisted event updates when model artifacts are available."""
     if churn_predictor.is_available:
         try:
             result = churn_predictor.predict(state)
@@ -111,9 +88,6 @@ def _model_unavailable_response(exc: ModelNotAvailableError):
     raise HTTPException(status_code=503, detail=str(exc))
 
 
-# --------------------------------------------------------------------
-# Dashboard summary (used by the frontend Dashboard view)
-# --------------------------------------------------------------------
 @app.get("/api/dashboard/summary")
 def dashboard_summary():
     states = twin_state_store.list_all()
@@ -130,10 +104,7 @@ def dashboard_summary():
     high_risk_customers = []
 
     if churn_predictor.is_available:
-        # Batch all customers into a single preprocessing + model call
-        # instead of predicting one row at a time - a RandomForestClassifier
-        # with n_jobs=-1 has real per-call overhead, so looping predict()
-        # once per customer is far slower than one predict_batch() call.
+        # Batch scoring avoids one Random Forest call per customer.
         try:
             probabilities = churn_predictor.predict_batch(states)
         except ModelNotAvailableError:
@@ -164,7 +135,7 @@ def dashboard_summary():
     high_risk_customers.sort(key=lambda c: c["churn_probability"], reverse=True)
     summary["high_risk_customers"] = high_risk_customers[:20]
 
-    # Recent events across all customers, most recent first.
+    # The dashboard displays the newest recent events first.
     recent_events = []
     for state in states:
         for record in state.event_history[-3:]:
@@ -182,9 +153,6 @@ def dashboard_summary():
     return summary
 
 
-# --------------------------------------------------------------------
-# Customers
-# --------------------------------------------------------------------
 @app.get("/api/customers")
 def list_customers():
     states = twin_state_store.list_all()
@@ -248,6 +216,41 @@ def get_customer_events(customer_id: str):
     return {"customer_id": customer_id, "events": [e.to_dict() for e in state.event_history]}
 
 
+@app.get("/api/customers/{customer_id}/trace")
+def get_customer_trace(customer_id: str, limit: int = 100):
+    """Return enriched transition records for one customer."""
+    if not config.EVENT_LOG_PATH.exists():
+        raise HTTPException(status_code=404, detail="No event log found yet.")
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be at least 1")
+
+    records = []
+    with config.EVENT_LOG_PATH.open() as event_log:
+        for line in event_log:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("customer_id") == customer_id:
+                records.append(record)
+
+    return {"customer_id": customer_id, "count": len(records), "trace": records[-limit:]}
+
+
+@app.get("/api/customers/{customer_id}/state-at")
+def get_customer_state_at(customer_id: str, timestamp: str):
+    """Return a customer's reconstructed state at an ISO 8601 timestamp."""
+    from twin_engine.state.time_travel import get_state_at
+
+    try:
+        state = get_state_at(customer_id, timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid ISO 8601 timestamp: {exc}") from exc
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"No state found for {customer_id}")
+    return state.to_dict()
+
+
 @app.get("/api/customers/{customer_id}/recommendations")
 def get_customer_recommendations(customer_id: str):
     state = _get_state_or_404(customer_id)
@@ -258,12 +261,9 @@ def get_customer_recommendations(customer_id: str):
     return result.to_dict()
 
 
-# --------------------------------------------------------------------
-# Events (real event ingestion path - what the Event Generator also uses)
-# --------------------------------------------------------------------
 @app.post("/api/events")
 def post_event(event_in: EventIn):
-    _get_state_or_404(event_in.customer_id)  # 404 early if unknown customer
+    _get_state_or_404(event_in.customer_id)
     try:
         event_type = EventType(event_in.event_type)
     except ValueError:
@@ -304,9 +304,6 @@ def event_generator_stop():
     return event_generator_status()
 
 
-# --------------------------------------------------------------------
-# Simulation (deterministic + Monte Carlo) - real Twin never modified
-# --------------------------------------------------------------------
 @app.post("/api/customers/{customer_id}/simulate")
 def simulate_customer(customer_id: str, sim_in: SimulateIn):
     state = _get_state_or_404(customer_id)
@@ -357,7 +354,4 @@ def simulate_customer_monte_carlo(customer_id: str, mc_in: MonteCarloIn):
     return payload
 
 
-# --------------------------------------------------------------------
-# Static frontend (simple HTML/CSS/JS - see frontend/)
-# --------------------------------------------------------------------
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

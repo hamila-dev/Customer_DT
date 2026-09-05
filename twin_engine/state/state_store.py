@@ -1,16 +1,4 @@
-"""
-Twin State Store.
-
-The State Store is the single source of truth for the current simulated
-Twin of every customer. For this MVP it is a simple in-memory dictionary
-backed by a local JSON file (see config.STORAGE_DIR) - no database
-infrastructure, exactly as specified for the prototype.
-
-Documented production evolution: this class's public interface
-(get/save/list/exists) is the seam a future PostgreSQL-backed
-implementation would preserve, so nothing above this layer (event
-handling, risk intelligence, simulation) would need to change.
-"""
+"""Thread-safe persistence for the current Twin state per customer."""
 
 from __future__ import annotations
 
@@ -25,7 +13,7 @@ import config
 
 
 class TwinStateStore:
-    """Simple thread-safe, JSON-file-persisted store of TwinState objects."""
+    """Keep one current `TwinState` per customer in memory and JSON storage."""
 
     def __init__(self, storage_path: Path = config.TWIN_STORE_PATH):
         self._storage_path = storage_path
@@ -33,9 +21,6 @@ class TwinStateStore:
         self._states: Dict[str, TwinState] = {}
         self._load_from_disk()
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
     def _load_from_disk(self) -> None:
         if not self._storage_path.exists():
             return
@@ -51,12 +36,11 @@ class TwinStateStore:
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         serializable = {cid: state.to_dict() for cid, state in self._states.items()}
         tmp_path = self._storage_path.with_suffix(".tmp")
+        # Replace the target only after serialization completes so a failed
+        # write does not leave a partially written state file.
         tmp_path.write_text(json.dumps(serializable, indent=2, default=str))
         tmp_path.replace(self._storage_path)
 
-    # ------------------------------------------------------------------
-    # CRUD
-    # ------------------------------------------------------------------
     def save(self, state: TwinState) -> None:
         with self._lock:
             self._states[state.customer_id] = state
@@ -89,6 +73,5 @@ class TwinStateStore:
             return len(self._states) == 0
 
 
-# Module-level singleton used across the app (simple, explicit, no DI framework
-# needed for an MVP of this size).
+# Shared by API, event generation, and synchronization code.
 twin_state_store = TwinStateStore()

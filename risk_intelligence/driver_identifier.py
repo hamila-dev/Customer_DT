@@ -1,38 +1,5 @@
-"""
-Driver Identifier — Random Forest-compatible risk driver identification.
 
-The model is a Random Forest, so this module does NOT use logistic
-regression coefficients (argmax |w_j * S_j|), as the original technical
-design document sketched for a different model type. Instead:
-
-  1. Reads the Random Forest's real, trained `feature_importances_`
-     (never invented) - a global measure of how much each transformed
-     feature reduces impurity across the forest.
-  2. Aggregates those importances back onto the ORIGINAL raw dataset
-     columns (a categorical column one-hot-encoded into several transformed
-     columns has its importance summed back together), using
-     `preprocessing.get_feature_names_out()` (the fitted ColumnTransformer
-     supports this).
-  3. Combines each raw column's global importance with how unusual /
-     salient the CURRENT customer's value is for that column, computed
-     from the real reference dataset (data/customer_churn.csv) - not
-     invented statistics.
-  4. Ranks raw columns by (importance * salience) and returns the top N.
-
-This produces a transparent, reproducible ranking grounded entirely in
-the real trained model and the real dataset. It explicitly does NOT claim
-causality - see the phrasing in `explanation` below ("important model
-feature", never "cause of churn").
-
-Known multicollinearity in this dataset (see docs/dataset-mapping.md):
-several feature groups are closely related by construction (e.g.
-num_claims_12m = num_approved + num_rejected + num_pending exactly;
-total_payout_amount_12m = total_claim_amount_12m * payout_ratio_12m
-exactly; premium_to_coverage_ratio is an exact function of current_premium
-and coverage_amount). When one of these ranks as a top driver, the
-explanation attaches a brief caveat so an Administrator doesn't read three
-near-redundant columns as three independent signals.
-"""
+"""Rank customer risk drivers using model importance and dataset salience."""
 
 from __future__ import annotations
 
@@ -52,11 +19,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Brief caveats for feature groups known (from real analysis of the
-# dataset - see docs/dataset-mapping.md) to be closely/exactly related to
-# other features in the schema. Attached to the explanation text when the
-# feature ranks as a top driver, so it's never presented as an
-# independent signal without context.
+# Caveats attached to explanations when related features rank as drivers.
 MULTICOLLINEARITY_NOTES: Dict[str, str] = {
     "num_claims_12m": "Note: this is the exact sum of approved + rejected + pending claims (see docs/dataset-mapping.md).",
     "num_approved_claims_12m": "Note: closely tied to num_claims_12m by construction (see docs/dataset-mapping.md).",
@@ -90,15 +53,12 @@ class Driver:
 
 @functools.lru_cache(maxsize=1)
 def _reference_dataframe() -> pd.DataFrame:
-    """Real reference distribution, loaded once, used only to judge how
-    unusual a customer's numeric/categorical value is (never used to
-    invent model metrics)."""
+    """Load the reference distribution once for salience calculations."""
     return pd.read_csv(config.CUSTOMER_DATA_CSV)
 
 
 def _numeric_salience(column: str, value: float) -> float:
-    """0 (typical/median value) to 1 (extreme value) based on the real
-    reference distribution's percentile rank."""
+    """Score how far a numeric value is from the reference median."""
     df = _reference_dataframe()
     if column not in df.columns:
         return 0.5
@@ -110,8 +70,7 @@ def _numeric_salience(column: str, value: float) -> float:
 
 
 def _categorical_salience(column: str, value: str) -> float:
-    """How much this category's empirical churn rate deviates from the
-    dataset's overall churn rate, normalized to roughly [0, 1]."""
+    """Score a category by its normalized deviation from overall churn."""
     df = _reference_dataframe()
     if column not in df.columns or "churn_flag" not in df.columns:
         return 0.5
@@ -127,15 +86,7 @@ def _categorical_salience(column: str, value: str) -> float:
 
 
 def _aggregate_importances_by_raw_column(predictor: ChurnPredictor) -> Dict[str, float]:
-    """
-    Maps the fitted preprocessing's transformed feature names back onto the
-    raw dataset columns in FEATURE_COLUMNS, summing feature_importances_
-    for every transformed feature that derives from each raw column.
-
-    Falls back to treating feature_importances_ as already aligned 1:1
-    with FEATURE_COLUMNS if the preprocessing object exposes no
-    `get_feature_names_out` (e.g. a bespoke transformer).
-    """
+    """Aggregate transformed model importances back to raw feature columns."""
     importances = np.asarray(predictor.model.feature_importances_)
 
     transformed_names = None
@@ -152,9 +103,7 @@ def _aggregate_importances_by_raw_column(predictor: ChurnPredictor) -> Dict[str,
     if transformed_names is not None and len(transformed_names) == len(importances):
         for name, importance in zip(transformed_names, importances):
             matched_column = None
-            # Prefer the longest matching raw column name to avoid a short
-            # column name (e.g. "age") false-matching inside a longer
-            # transformed name that happens to contain it as a substring.
+            # Match longer names first so a short name cannot match a substring.
             for raw_col in sorted(FEATURE_COLUMNS, key=len, reverse=True):
                 if raw_col in name:
                     matched_column = raw_col
@@ -179,6 +128,8 @@ def _aggregate_importances_by_raw_column(predictor: ChurnPredictor) -> Dict[str,
 
 
 class DriverIdentifier:
+    """Combine model importance with customer-specific feature salience."""
+
     def __init__(self, predictor: ChurnPredictor = churn_predictor):
         self._predictor = predictor
 

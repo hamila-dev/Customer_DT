@@ -1,26 +1,13 @@
-"""
-Central configuration for the Customer Twin MVP.
 
-Every "assumption" value in this file (risk thresholds, Monte Carlo
-uncertainty parameters, recommendation effect estimates, expected-value
-inputs) is an MVP prototype assumption, NOT an empirically derived or
-production value. They are collected here, in one place, so they are easy
-to find, question, and replace once real data / real experiments exist.
 
-Nothing in this file is invented ML output (no fake accuracy, no fake
-feature importance, no fake probabilities) - it only configures how the
-*application* behaves around whatever the real trained model produces.
-"""
+"""Shared paths and business assumptions for the Customer Twin application."""
 
 from pathlib import Path
 
-# --------------------------------------------------------------------------
-# Paths
-# --------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 MODEL_DIR = BASE_DIR / "model"
-STORAGE_DIR = BASE_DIR / "storage"  # local JSON persistence (created at runtime)
+STORAGE_DIR = BASE_DIR / "storage"  # local JSON persistence
 
 CUSTOMER_DATA_CSV = DATA_DIR / "customer_churn.csv"
 
@@ -33,28 +20,14 @@ TWIN_STORE_PATH = STORAGE_DIR / "twin_states.json"
 EVENT_LOG_PATH = STORAGE_DIR / "event_log.json"
 RISK_HISTORY_PATH = STORAGE_DIR / "risk_history.json"
 
-# --------------------------------------------------------------------------
-# Dataset loading
-# --------------------------------------------------------------------------
-# How many rows of the public/synthetic CSV to load into the local demo
-# store on startup. This is a prototype convenience limit only - the CSV
-# itself has 50,000 rows, far more than an MVP dashboard needs to display.
+# Keep startup responsive; the source CSV contains 50,000 rows.
 MAX_CUSTOMERS_TO_LOAD = 300
 
-# --------------------------------------------------------------------------
-# Risk levels
-# ASSUMPTION: these churn-probability cut points are MVP BUSINESS
-# thresholds, chosen by looking at the trained model's predicted-probability
-# distribution over the real reference dataset (roughly: median ~0.34,
-# 75th percentile ~0.56, 90th percentile ~0.74) so that HIGH/MEDIUM/LOW
-# produce a usable three-way split. They are NOT scientifically validated,
-# NOT derived from a cost/benefit study, and should be revisited once real
-# business impact data exists.
-# --------------------------------------------------------------------------
+# Business thresholds chosen from the reference prediction distribution;
+# they are not validated decision boundaries.
 RISK_THRESHOLDS = {
-    "high": 0.60,    # churn_probability >= 0.60  -> HIGH
-    "medium": 0.35,  # 0.35 <= churn_probability < 0.60 -> MEDIUM
-    # churn_probability < 0.35 -> LOW
+    "high": 0.60,
+    "medium": 0.35,
 }
 
 
@@ -66,36 +39,16 @@ def risk_level_from_probability(probability: float) -> str:
     return "LOW"
 
 
-# --------------------------------------------------------------------------
-# Driver identification
-# --------------------------------------------------------------------------
-# Number of top drivers to surface per customer.
+# Number of drivers shown per customer.
 TOP_N_DRIVERS = 3
 
-# --------------------------------------------------------------------------
-# Monte Carlo simulation assumptions
-# ASSUMPTION: all values below define *simulation uncertainty*, i.e. how
-# much a scenario's numeric parameters are randomly perturbed across Monte
-# Carlo trials. They are NOT statements about real-world variance and are
-# clearly surfaced to the user as configurable assumptions.
-# --------------------------------------------------------------------------
+# These values describe simulation perturbations, not measured real-world variance.
 MONTE_CARLO_DEFAULT_TRIALS = 300
 
-# Relative (fractional) standard deviation applied to numeric scenario
-# parameters during Monte Carlo perturbation, e.g. 0.1 = +/-10% noise
-# around the scenario-transformed value.
+# Relative standard deviation applied to numeric scenario parameters.
 MONTE_CARLO_NUMERIC_NOISE_STD = 0.10
 
-# --------------------------------------------------------------------------
-# Recommendation Engine - Action Lookup
-# ASSUMPTION: this rule table is an MVP prototype rule set, written by hand
-# from the dataset's available features. It is not a learned policy.
-# --------------------------------------------------------------------------
-## Keys MUST match the raw dataset column names in
-## risk_intelligence.feature_mapper.FEATURE_COLUMNS exactly - the Driver
-## Identifier ranks drivers using those same column names. Only columns
-## with a plausible, dataset-grounded administrator action are given a
-## dedicated rule; everything else falls back to "default".
+# Keys must match raw dataset feature names in feature_mapper.FEATURE_COLUMNS.
 ACTION_RULES = {
     "missed_payment_flag": {
         "action": "payment_plan_review",
@@ -211,16 +164,9 @@ ACTION_RULES = {
     },
 }
 
-# --------------------------------------------------------------------------
-# Recommendation Engine - Effect Estimator
-# ASSUMPTION: these are MVP simulation assumptions about how much an action
-# is assumed to reduce churn probability. There is no intervention-outcome
-# dataset backing these numbers. They exist so the Expected Value Ranker has
-# a documented, configurable, and clearly-labelled input to work with, and
-# so they can be swapped for a learned uplift/treatment-effect model later.
-# --------------------------------------------------------------------------
+# Assumed absolute probability reductions; no intervention-outcome data backs them.
 ASSUMED_ACTION_EFFECT = {
-    "payment_plan_review": 0.09,        # assumed absolute churn-probability reduction
+    "payment_plan_review": 0.09,
     "premium_review": 0.06,
     "service_recovery_outreach": 0.10,
     "claims_review_outreach": 0.07,
@@ -230,15 +176,8 @@ ASSUMED_ACTION_EFFECT = {
     "general_account_review": 0.02,
 }
 
-# --------------------------------------------------------------------------
-# Recommendation Engine - Expected Value Ranker
-# ASSUMPTION: prototype placeholders for customer lifetime value and action
-# cost. Real values should come from Finance / CRM once available.
-# --------------------------------------------------------------------------
-DEFAULT_CUSTOMER_VALUE = 3000.0  # placeholder assumed customer value (currency units, NZD)
-# Chosen as roughly 3x the reference dataset's average current_premium
-# (~NZD 1,048/year) as a rough stand-in for a few years of retained premium
-# revenue - an MVP placeholder, not a real Finance-supplied CLV figure.
+# Placeholder customer value and action costs until Finance/CRM data exists.
+DEFAULT_CUSTOMER_VALUE = 3000.0
 
 ASSUMED_ACTION_COST = {
     "payment_plan_review": 8.0,
@@ -251,9 +190,6 @@ ASSUMED_ACTION_COST = {
     "general_account_review": 5.0,
 }
 
-# --------------------------------------------------------------------------
-# Event generator
-# --------------------------------------------------------------------------
 EVENT_GENERATOR_DEFAULT_INTERVAL_SECONDS = 5
 EVENT_GENERATOR_SCENARIOS = [
     "payment_missed",
@@ -265,9 +201,6 @@ EVENT_GENERATOR_SCENARIOS = [
     "complaint_lodged",
 ]
 
-# --------------------------------------------------------------------------
-# API / server
-# --------------------------------------------------------------------------
 API_HOST = "0.0.0.0"
 API_PORT = 8000
-CORS_ALLOW_ORIGINS = ["*"]  # MVP only - tighten before any real deployment
+CORS_ALLOW_ORIGINS = ["*"]  # Restrict before production deployment.

@@ -2,7 +2,7 @@
 
 A working prototype **Customer Digital Twin** for Insurise: a live, per-customer virtual state that reacts to events, a trained Random Forest churn model that scores it, a Recommendation Engine that turns risk into administrator actions, and a Digital Twin Engine that clones customer states to simulate hypothetical futures—deterministically or via Monte Carlo—without modifying production data.
 
-> **Prototype Status:** This system uses a synthetic insurance policyholder churn dataset (see `docs/dataset-mapping.md`) and is intentionally simplified. It does not include Kafka, Redis, PostgreSQL, Docker, Kubernetes, or authentication.
+> **Prototype Status:** This system uses a synthetic insurance policyholder churn dataset (see `docs/dataset-mapping.md`) 
 >
 > **Model Inference:** The Random Forest model in `model/` is a fixed, pre-trained artifact. The application performs inference only and does not retrain or modify the model.
 

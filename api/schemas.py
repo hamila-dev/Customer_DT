@@ -1,5 +1,4 @@
-"""Pydantic schemas for API requests/responses. Handlers stay thin; these
-just describe the shapes going over the wire."""
+"""Pydantic request schemas for the thin API handlers."""
 
 from __future__ import annotations
 

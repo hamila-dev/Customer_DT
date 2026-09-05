@@ -1,22 +1,6 @@
-"""
-Feature Mapper.
 
-Converts a Twin state into the EXACT feature vector the trained model
-expects, per model/model_metadata.json (`feature_columns`,
-`numerical_features`, `categorical_features`) and model/feature_schema.json
-(dtype, kind, and - for categoricals - allowed_values for every feature).
 
-This module does not invent values. If a Twin state is missing a required
-feature, or a categorical value isn't one of the schema's allowed values,
-`build_feature_row` raises `FeatureMappingError` with a specific,
-actionable message rather than silently substituting a default.
-
-The column set/order here is loaded directly from the shipped
-model/model_metadata.json and model/feature_schema.json (not
-hand-duplicated), so this file cannot silently drift out of sync with the
-artifacts in model/ - if those files change, this module's behavior
-changes with them automatically.
-"""
+"""Map `TwinState` objects to the trained model's feature schema."""
 
 from __future__ import annotations
 
@@ -54,12 +38,9 @@ def _load_model_metadata() -> Dict[str, Any]:
 _FEATURE_SCHEMA = _load_feature_schema()
 _MODEL_METADATA = _load_model_metadata()
 
-# Authoritative feature column order/set: model/model_metadata.json's
-# `feature_columns` if present, else derived from feature_schema.json,
-# else (only if neither artifact is present yet) a hard-coded fallback
-# matching the schema this MVP was integrated against - so the app can
-# still start and describe its expected schema before you've added the
-# model/ artifacts.
+# Prefer the shipped metadata, then the feature schema, so preprocessing sees
+# the same column order used during training. The fallback keeps the app
+# inspectable before model artifacts are installed.
 _FALLBACK_FEATURE_COLUMNS = [
     "age", "customer_tenure_months", "multi_policy_flag", "num_policies", "renewal_month",
     "current_premium", "premium_last_year", "premium_change_pct", "num_price_increases_last_3y",
@@ -85,7 +66,7 @@ CATEGORICAL_COLUMNS: List[str] = (
 
 NUMERIC_COLUMNS: List[str] = [c for c in FEATURE_COLUMNS if c not in CATEGORICAL_COLUMNS]
 
-# name -> allowed_values (categorical only), for validation
+# Categorical values are checked before they reach the preprocessing pipeline.
 _ALLOWED_VALUES: Dict[str, List[str]] = {
     f["name"]: f["allowed_values"] for f in _FEATURE_SCHEMA if f.get("allowed_values")
 }
@@ -113,18 +94,14 @@ def _validate_row(feature_dict: Dict[str, Any]) -> None:
 
 
 def build_feature_row(state: TwinState) -> pd.DataFrame:
-    """Single-row DataFrame for one customer, ready to hand to preprocessing.joblib.
-
-    Raises FeatureMappingError if the Twin state cannot satisfy the
-    model's required feature schema - never silently substitutes a value.
-    """
+    """Build a validated single-row frame for model preprocessing."""
     feature_dict = state.to_feature_dict()
     _validate_row(feature_dict)
     return pd.DataFrame([{col: feature_dict[col] for col in FEATURE_COLUMNS}])
 
 
 def build_feature_frame(states: Iterable[TwinState]) -> pd.DataFrame:
-    """Multi-row DataFrame, e.g. for Monte Carlo batches or bulk scoring."""
+    """Build a validated multi-row frame for batch scoring."""
     states = list(states)
     if not states:
         return pd.DataFrame(columns=FEATURE_COLUMNS)
@@ -136,7 +113,6 @@ def build_feature_frame(states: Iterable[TwinState]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=FEATURE_COLUMNS)
 
 
-# Backwards-compatible aliases used elsewhere in the codebase
-# (risk_intelligence.driver_identifier, scripts/train_model_example.py).
+# Preserve the names used by existing callers.
 twin_state_to_feature_row = build_feature_row
 twin_states_to_feature_frame = build_feature_frame

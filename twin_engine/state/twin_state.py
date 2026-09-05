@@ -1,45 +1,3 @@
-"""
-Twin State — the customer's current virtual state (S_t).
-
-Fields here map directly onto data/customer_churn.csv (the insurance
-policyholder churn dataset) and model/feature_schema.json /
-model/model_metadata.json (the trained Random Forest's exact input
-contract). See docs/dataset-mapping.md for the full mapping and the
-Static / Dynamic / ML-only / Event-driven / Simulation-parameter
-classification of every field.
-
-Field categories (see docs/dataset-mapping.md for the full table):
-
-  STATIC (identity/profile, never mutated by any event in this MVP):
-    customer_id, age, region_name, marital_status, customer_tenure_months,
-    multi_policy_flag, num_policies, policy_type, renewal_month,
-    payment_frequency, autopay_enabled
-
-  DYNAMIC (mutated by events):
-    current_premium, premium_last_year, num_price_increases_last_3y,
-    coverage_amount, late_payment_count_12m, num_claims_12m,
-    num_approved_claims_12m, num_rejected_claims_12m,
-    num_pending_claims_12m, total_claim_amount_12m,
-    total_payout_amount_12m, avg_claim_amount, avg_settlement_time_days,
-    days_since_last_claim, num_contacts_12m, complaint_flag,
-    complaint_resolution_days, quote_requested_flag,
-    coverage_downgrade_flag
-
-  ML-ONLY (fed to the model, present in Twin state, but no dataset-grounded
-  event mutates them in this MVP - they start at their bootstrap value and
-  stay there until a future event is added):
-    payment_method_change_flag
-
-  DERIVED (recomputed properties, never stored independently, so they can
-  never silently drift out of sync with their inputs):
-    premium_change_pct, premium_to_coverage_ratio, payout_ratio_12m,
-    missed_payment_flag
-
-Excluded entirely from the Twin (per model/model_metadata.json's
-`excluded_features`, or not needed for the MVP demo): as_of_date,
-age_band (a strict bucketing of age), churn_type, churn_probability_true.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -54,8 +12,6 @@ def _now_iso() -> str:
 
 @dataclass
 class TwinEventRecord:
-    """A single entry in the Twin's event history."""
-
     event_id: str
     event_type: str
     occurred_at: str
@@ -68,9 +24,9 @@ class TwinEventRecord:
 
 @dataclass
 class TwinState:
-    """Represents S_t - the current state of one policyholder's Digital Twin."""
+    """Current state of one policyholder's Digital Twin."""
 
-    # ---------------- Identity / static profile (never mutated by events) ----------------
+    # Static profile fields are not changed by event transitions.
     customer_id: str
     age: int
     region_name: str
@@ -83,7 +39,7 @@ class TwinState:
     payment_frequency: str
     autopay_enabled: int
 
-    # ---------------- Dynamic (mutated by events) ----------------
+    # Trailing-period and policy values changed by event transitions.
     current_premium: float
     premium_last_year: float
     num_price_increases_last_3y: int
@@ -104,32 +60,25 @@ class TwinState:
     quote_requested_flag: int
     coverage_downgrade_flag: int
 
-    # ---------------- ML-only (no dataset-grounded event mutates this in the MVP) ----------------
+    # Fed to the model but not changed by the current event model.
     payment_method_change_flag: int = 0
 
-    # ---------------- Twin-engine bookkeeping (not raw dataset columns) ----------------
+    # Engine metadata, not raw dataset columns.
     version: int = 0
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
     event_history: List[TwinEventRecord] = field(default_factory=list)
 
-    # ---------------- Ground truth label, reference only, never an ML feature ----------------
+    # Reference label; never included in the model feature vector.
     historical_churn_label: Optional[int] = None
 
-    # ------------------------------------------------------------------
-    # Derived properties - recomputed, never stored independently
-    # ------------------------------------------------------------------
+    # Derived properties are recomputed from their source fields.
     @property
     def premium_change_pct(self) -> float:
-        """(current_premium - premium_last_year) / premium_last_year.
+        """Compute the premium change used by the simulated feature vector.
 
-        NOTE: in the source training data this column carries some
-        independent noise beyond this exact formula (observed deviation up
-        to ~0.22 in a sample check). For Twin simulation purposes we
-        recompute it exactly from current_premium/premium_last_year so a
-        simulated premium change always produces an internally consistent
-        feature vector - this is a documented MVP modeling choice, not a
-        claim that it reproduces the original data-generating noise.
+        The source dataset contains independent noise in this column, but
+        simulation needs the feature to stay consistent with its two inputs.
         """
         if self.premium_last_year == 0:
             return 0.0
@@ -137,42 +86,31 @@ class TwinState:
 
     @property
     def premium_to_coverage_ratio(self) -> float:
-        """current_premium / coverage_amount - an exact match to how this
-        column is derived in the source dataset (verified during
-        integration, floating-point-rounding aside)."""
+        """Return the premium-to-coverage ratio used by the model."""
         if self.coverage_amount == 0:
             return 0.0
         return self.current_premium / self.coverage_amount
 
     @property
     def payout_ratio_12m(self) -> float:
-        """total_payout_amount_12m / total_claim_amount_12m.
-
-        ASSUMPTION: when total_claim_amount_12m is 0 (no claims filed),
-        the source dataset still carries a baseline value in roughly the
-        0.75-0.85 range rather than an undefined 0/0. We use a documented
-        MVP default of 0.75 in that case rather than 0.0, to avoid
-        implying "no claims" is equivalent to "claims are never paid out."
-        """
+        """Return the payout-to-claim ratio, using the dataset's no-claim baseline."""
         if self.total_claim_amount_12m == 0:
+            # The source data uses a 0.75-0.85 baseline when no claim exists;
+            # 0.75 avoids treating no claims as no payouts.
             return 0.75
         return self.total_payout_amount_12m / self.total_claim_amount_12m
 
     @property
     def missed_payment_flag(self) -> int:
-        """1 if late_payment_count_12m >= 4, else 0 - matches the exact
-        rule documented in the source data dictionary
-        ("1 if missed payments flag (>=4 late payments), else 0"),
-        verified against the real dataset during integration."""
+        """Apply the dataset rule: four or more late payments means missed payment."""
         return 1 if self.late_payment_count_12m >= 4 else 0
 
-    # ------------------------------------------------------------------
     def clone(self) -> "TwinState":
-        """Deep, fully independent copy. Used by the Scenario Transformer
-        so what-if simulations can never mutate the real Twin state."""
+        """Return an independent copy for what-if simulation."""
         return copy.deepcopy(self)
 
     def record_event(self, event_id: str, event_type: str, payload: Dict[str, Any], description: str = "") -> None:
+        """Append an event record, retaining only the latest 50 entries."""
         self.event_history.append(
             TwinEventRecord(event_id=event_id, event_type=event_type, occurred_at=_now_iso(), payload=payload, description=description)
         )
@@ -184,12 +122,7 @@ class TwinState:
         self.updated_at = _now_iso()
 
     def to_feature_dict(self) -> Dict[str, Any]:
-        """
-        The full feature vector fed to preprocessing.joblib. Field names
-        and set intentionally match model/feature_schema.json and
-        model/model_metadata.json's feature_columns exactly - see
-        risk_intelligence/feature_mapper.py.
-        """
+        """Build the feature vector required by the trained preprocessing pipeline."""
         return {
             "age": self.age,
             "customer_tenure_months": self.customer_tenure_months,
