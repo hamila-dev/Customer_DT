@@ -4,9 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Customer Twin · Insurise</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -29,6 +26,9 @@
         <a href="#/twin" data-route="twin">
           <span class="nav-icon">◎</span> Digital Twin
         </a>
+        <a href="#/events" data-route="events">
+          <span class="nav-icon">⚡</span> Events
+        </a>
         <a href="#/simulation" data-route="simulation">
           <span class="nav-icon">◇</span> Simulation
         </a>
@@ -36,9 +36,9 @@
       <div class="sidebar-footer">
         <div class="gen-status" id="gen-status">
           <span class="dot dot-off" id="gen-dot"></span>
-          <span id="gen-label">Event generator: stopped</span>
+          <span id="gen-label">Source off</span>
         </div>
-        <div class="sidebar-note">Prototype · public dataset</div>
+        <div class="sidebar-note">Prototype</div>
       </div>
     </aside>
 
@@ -46,7 +46,7 @@
       <header class="topbar">
         <div class="topbar-title" id="page-title">Dashboard</div>
         <div class="topbar-actions">
-          <span class="model-pill" id="model-pill">checking model…</span>
+          <span class="model-pill" id="model-pill">model…</span>
         </div>
       </header>
       <div class="view" id="view"></div>

@@ -1,16 +1,6 @@
-"""
-Action Lookup.
 
-A simple, deterministic rule table (config.ACTION_RULES) mapping a risk
-driver (a raw dataset feature identified by the Driver Identifier) to a
-candidate administrator action. This is intentionally NOT a learned
-policy - it's an MVP prototype rule set, hand-written from the features
-actually present in the dataset.
 
-These actions are NOT claimed to be proven to reduce churn - see
-recommendation_engine/effect_estimator.py for the (explicitly labelled)
-assumed effect of each action.
-"""
+"""Translate ranked risk drivers into deduplicated candidate actions."""
 
 from __future__ import annotations
 
@@ -24,6 +14,8 @@ import config
 
 @dataclass
 class CandidateAction:
+    """Action selected from a driver-to-action rule."""
+
     action_id: str
     label: str
     description: str
@@ -39,6 +31,8 @@ class CandidateAction:
 
 
 class ActionLookup:
+    """Apply the configured action rules to ranked drivers."""
+
     def __init__(self, rules: Dict[str, Dict[str, str]] = None):
         self._rules = rules or config.ACTION_RULES
 

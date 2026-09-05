@@ -1,23 +1,6 @@
-"""
-Customer-domain events.
 
-Event flow (see docs/event-model.md for full detail):
 
-    Event Generator -> Event -> Event Transition Handler -> Twin State Store
-        -> Risk recalculation
-
-Only event types grounded in the actual dataset (data/customer_churn.csv,
-the insurance policyholder churn dataset) are implemented. Each is
-documented with the Twin state field(s) it affects, the ML feature(s) it
-therefore affects, and the expected state change - see
-twin_engine/events/transition_handler.py and docs/event-model.md.
-
-`Event` has no dependency on Kafka or any transport mechanism - it is a
-plain, transport-agnostic data object, produced today by the local
-EventGenerator or the POST /events endpoint. The same object could equally
-be the payload consumed off a Kafka topic later, without changing anything
-downstream of this class.
-"""
+"""Transport-agnostic customer event types and envelopes."""
 
 from __future__ import annotations
 
@@ -29,24 +12,7 @@ from typing import Any, Dict
 
 
 class EventType(str, Enum):
-    """
-    Supported customer-domain events.
-
-    Dataset grounding (see docs/event-model.md for the full contract of each):
-      PAYMENT_MISSED         -> late_payment_count_12m (+ derived missed_payment_flag)
-      CLAIM_CREATED          -> num_claims_12m, num_{approved,rejected,pending}_claims_12m,
-                                 total_claim_amount_12m, avg_claim_amount,
-                                 total_payout_amount_12m, avg_settlement_time_days,
-                                 days_since_last_claim
-      PREMIUM_CHANGED        -> current_premium, num_price_increases_last_3y
-                                 (+ derived premium_change_pct, premium_to_coverage_ratio)
-      POLICY_RENEWED         -> premium_last_year, and a fresh trailing-12-month
-                                 window for late payments/claims/complaints/contacts
-      ENGAGEMENT_CHANGED     -> num_contacts_12m, quote_requested_flag
-      COVERAGE_DOWNGRADED    -> coverage_amount, coverage_downgrade_flag
-                                 (+ derived premium_to_coverage_ratio)
-      COMPLAINT_LODGED       -> complaint_flag, complaint_resolution_days
-    """
+    """Customer-domain events defined in `docs/event-model.md`."""
 
     PAYMENT_MISSED = "payment_missed"
     CLAIM_CREATED = "claim_created"
@@ -59,7 +25,7 @@ class EventType(str, Enum):
 
 @dataclass
 class Event:
-    """A single customer-domain event, E_t."""
+    """Event envelope shared by API, generator, and future transport adapters."""
 
     customer_id: str
     event_type: EventType

@@ -1,17 +1,6 @@
-"""
-Effect Estimator.
 
-There is no real intervention-outcome dataset for this MVP, so this
-component returns FIXED, DOCUMENTED assumption values
-(config.ASSUMED_ACTION_EFFECT) describing how much each action is assumed
-to reduce a customer's churn probability.
 
-These values are explicitly "MVP simulation assumptions" - NOT empirical
-facts, NOT derived from any A/B test or historical intervention log. The
-interface is structured so this class can later be swapped for a learned
-uplift/treatment-effect model (e.g. a T-learner or causal forest) without
-changing any caller (recommendation_engine/expected_value_ranker.py).
-"""
+"""Estimate configured action effects for recommendation ranking."""
 
 from __future__ import annotations
 
@@ -25,6 +14,8 @@ import config
 
 @dataclass
 class EstimatedEffect:
+    """Configured absolute churn-probability reduction for an action."""
+
     action_id: str
     assumed_risk_reduction: float  # absolute reduction in churn probability, e.g. 0.05 = 5 points
     basis: str
@@ -38,6 +29,8 @@ class EstimatedEffect:
 
 
 class EffectEstimator:
+    """Read action effects from the configured assumption table."""
+
     def __init__(self, assumed_effects: Dict[str, float] = None):
         self._assumed_effects = assumed_effects or config.ASSUMED_ACTION_EFFECT
 

@@ -1,21 +1,4 @@
-"""
-Risk Intelligence — Random Forest churn predictor.
-
-This module NEVER trains a model and NEVER invents a prediction. It only
-loads pre-trained artifacts (produced by you, separately - see
-model/README.md) and, if present, uses them to:
-
-  1. Receive a Twin state.
-  2. Convert it into the model feature vector (risk_intelligence.feature_mapper).
-  3. Apply the saved preprocessing.
-  4. Run the Random Forest.
-  5. Return churn probability.
-  6. Convert probability into a configurable risk level (config.py).
-
-If the artifacts are missing, every public method raises
-ModelNotAvailableError with a clear, actionable message instead of
-fabricating a result.
-"""
+"""Load the shipped churn model and expose single- and batch-prediction APIs."""
 
 from __future__ import annotations
 
@@ -36,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class ModelNotAvailableError(RuntimeError):
-    """Raised when a request needs the trained model but artifacts are missing."""
+    """Raised when prediction is requested before model artifacts are available."""
 
 
 @dataclass
@@ -56,16 +39,7 @@ class RiskResult:
 
 
 class ChurnPredictor:
-    """
-    Loads model/churn_model.joblib, model/preprocessing.joblib, and
-    model/model_metadata.json if present, and exposes a `predict` method.
-
-    Safe to construct even when artifacts are missing - `is_available`
-    will be False and `predict` will raise ModelNotAvailableError with
-    instructions, rather than crashing the whole application at import
-    time. This lets the rest of the API run (customers list, Twin views,
-    events) even before you've dropped in a trained model.
-    """
+    """Load model artifacts when present and fail prediction explicitly when absent."""
 
     MISSING_ARTIFACT_MESSAGE = (
         "Trained model artifacts were not found. This endpoint requires exactly:\n"
@@ -102,7 +76,8 @@ class ChurnPredictor:
             logger.warning("Model artifacts not found yet. %s", self.MISSING_ARTIFACT_MESSAGE)
             return
 
-        import joblib  # local import: keeps joblib optional if never used
+        # Keep joblib optional for API features that do not need prediction.
+        import joblib
 
         try:
             self.model = joblib.load(self._model_path)
@@ -141,13 +116,7 @@ class ChurnPredictor:
 
     @property
     def model_version(self) -> str:
-        """
-        The shipped model_metadata.json (see model/README.md for the
-        expected shape) may or may not include an explicit "model_version"
-        string. If it doesn't, we build a readable identifier from
-        whatever real metadata fields ARE present (model type + training
-        timestamp) rather than reporting a meaningless "unversioned".
-        """
+        """Return the explicit metadata version or a stable metadata-derived label."""
         if "model_version" in self.metadata:
             return self.metadata["model_version"]
         model_type = self.metadata.get("model_type", "model")
@@ -156,8 +125,7 @@ class ChurnPredictor:
 
     @property
     def evaluation_metrics(self) -> Dict[str, Any]:
-        """Real, held-out evaluation metrics as recorded in model_metadata.json
-        at training time - never computed or invented here."""
+        """Return held-out metrics recorded with the shipped model."""
         return self.metadata.get("evaluation_metrics", {})
 
     def _require_model(self) -> None:
@@ -167,8 +135,7 @@ class ChurnPredictor:
     def _predict_proba_for_frame(self, feature_frame: pd.DataFrame):
         self._require_model()
         transformed = self.preprocessing.transform(feature_frame)
-        # Standard scikit-learn binary classifier convention: column 1 = positive class.
-        # model_metadata.json should record which class index/label corresponds to "churn".
+        # Metadata selects the positive-class column; binary classifiers conventionally use 1.
         proba = self.model.predict_proba(transformed)
         churn_class_index = self.metadata.get("churn_class_index", 1)
         return proba[:, churn_class_index]
@@ -185,7 +152,7 @@ class ChurnPredictor:
         )
 
     def predict_batch(self, states) -> list:
-        """Used by the Monte Carlo engine - one preprocessing/model call for N cloned states."""
+        """Score many states in one preprocessing/model call."""
         from risk_intelligence.feature_mapper import twin_states_to_feature_frame
 
         states = list(states)
@@ -196,6 +163,5 @@ class ChurnPredictor:
         return [float(p) for p in probabilities]
 
 
-# Module-level singleton. Constructed once; if artifacts are absent at
-# import time, `reload()` can pick them up later without restarting the app.
+# Reload can pick up artifacts added after process startup.
 churn_predictor = ChurnPredictor()

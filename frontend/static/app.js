@@ -10,6 +10,19 @@ const state = {
   modelAvailable: null, // null = unknown yet, true/false once known
 };
 
+const BASELINE_MC_TRIALS = 100;
+const EVENTS_POLL_MS = 5000;
+const EVENTS_FEED_CAP = 50;
+
+let viewPollTimer = null;
+
+function stopViewTimers() {
+  if (viewPollTimer != null) {
+    clearInterval(viewPollTimer);
+    viewPollTimer = null;
+  }
+}
+
 // ---------------------------------------------------------------- helpers
 
 async function apiGet(path) {
@@ -95,6 +108,67 @@ function customerLabel(c) {
   return parts ? `${parts} (${c.customer_id})` : c.customer_id;
 }
 
+function customerMatchesQuery(c, query) {
+  if (!query) return true;
+  const text = query.toLowerCase();
+  return customerLabel(c).toLowerCase().includes(text) || String(c.customer_id).toLowerCase().includes(text);
+}
+
+function histogramEl(distributionSample, extraClass) {
+  const buckets = new Array(20).fill(0);
+  (distributionSample || []).forEach((v) => {
+    const idx = Math.min(19, Math.max(0, Math.floor(v * 20)));
+    buckets[idx] += 1;
+  });
+  const maxBucket = Math.max(...buckets, 1);
+  return el(
+    "div",
+    { class: extraClass ? `hist-bars ${extraClass}` : "hist-bars" },
+    buckets.map((count) => el("div", { class: "hist-bar", style: `height:${(count / maxBucket) * 100}%` }))
+  );
+}
+
+/**
+ * Baseline Monte Carlo for the Digital Twin view.
+ *
+ * The Monte Carlo engine perturbs numeric scenario parameters with
+ * multiplicative Gaussian noise (mean=1.0, std=0.10 by default).
+ * `premium_changed` + `change_pct: 0` would therefore stay 0 in every
+ * trial and produce a degenerate (flat) distribution. Passing the
+ * customer's actual `current_premium` lets that ±10% noise move a
+ * non-zero dollar amount — sensitivity to normal premium fluctuation,
+ * NOT a statistical confidence interval or margin of error on the model.
+ * The simulate/monte-carlo endpoint clones Twin state and never persists.
+ */
+function fetchBaselineMonteCarlo(customerId, currentPremium) {
+  return apiPost(`/customers/${customerId}/simulate/monte-carlo`, {
+    scenario: "premium_changed",
+    parameters: { current_premium: currentPremium },
+    trials: BASELINE_MC_TRIALS,
+  });
+}
+
+function fillStabilityPanel(panel, mc) {
+  panel.innerHTML = "";
+  panel.appendChild(el("div", { class: "stability-title" }, "Stability range (±10% premium)"));
+  panel.appendChild(
+    el("div", { class: "stability-stats" }, [
+      el("div", {}, [el("div", { class: "small muted" }, "Mean"), el("div", { class: "stat-val" }, pct(mc.mean_churn_probability))]),
+      el("div", {}, [el("div", { class: "small muted" }, "P10"), el("div", { class: "stat-val" }, pct(mc.p10_churn_probability))]),
+      el("div", {}, [el("div", { class: "small muted" }, "P90"), el("div", { class: "stat-val" }, pct(mc.p90_churn_probability))]),
+      el("div", {}, [el("div", { class: "small muted" }, "Std"), el("div", { class: "stat-val" }, pct(mc.std_dev))]),
+    ])
+  );
+  panel.appendChild(histogramEl(mc.distribution_sample, "compact"));
+  panel.appendChild(
+    el("div", { class: "small muted", style: "margin-top:8px;" }, "Simulated premium noise, not a confidence interval.")
+  );
+}
+
+function recMcLineText(pointProbability, mc) {
+  return `${pct(pointProbability)} · MC ${pct(mc.p10_churn_probability)}–${pct(mc.p90_churn_probability)}`;
+}
+
 // ---------------------------------------------------------------- topbar
 
 async function refreshTopbar() {
@@ -104,8 +178,8 @@ async function refreshTopbar() {
     const label = document.getElementById("gen-label");
     dot.className = "dot " + (status.running ? "dot-on" : "dot-off");
     label.textContent = status.running
-      ? `Event generator: running (${status.events_generated} events)`
-      : "Event generator: stopped";
+      ? `Source on · ${status.events_generated}`
+      : "Source off";
   } catch {
     /* non-fatal */
   }
@@ -117,7 +191,7 @@ async function refreshTopbar() {
   try {
     const pill = document.getElementById("model-pill");
     if (state.modelAvailable !== null) {
-      pill.textContent = state.modelAvailable ? "model loaded" : "model not loaded";
+      pill.textContent = state.modelAvailable ? "Model on" : "No model";
       pill.className = "model-pill " + (state.modelAvailable ? "ok" : "missing");
     }
   } catch {
@@ -131,6 +205,7 @@ const routes = {
   dashboard: { title: "Dashboard", render: renderDashboard },
   customers: { title: "Customers", render: renderCustomers },
   twin: { title: "Digital Twin", render: renderTwin },
+  events: { title: "Events", render: renderEvents },
   simulation: { title: "Simulation", render: renderSimulation },
 };
 
@@ -141,6 +216,7 @@ function currentRoute() {
 }
 
 async function router() {
+  stopViewTimers();
   const { route, param } = currentRoute();
   document.querySelectorAll(".nav a").forEach((a) => {
     a.classList.toggle("active", a.dataset.route === route);
@@ -154,7 +230,7 @@ async function router() {
     view.innerHTML = "";
     view.appendChild(
       el("div", { class: "card card-pad" }, [
-        el("div", { class: "section-title" }, "Something went wrong"),
+        el("div", { class: "section-title" }, "Error"),
         el("div", { class: "small muted" }, err.message || String(err)),
       ])
     );
@@ -176,18 +252,17 @@ async function renderDashboard(view) {
   view.innerHTML = "";
 
   const kpis = el("div", { class: "kpi-row" }, [
-    kpiCard("Total customers", summary.total_customers, ""),
-    kpiCard("High risk", summary.high_risk, "high"),
-    kpiCard("Medium risk", summary.medium_risk, "medium"),
-    kpiCard("Low risk", summary.low_risk, "low"),
+    kpiCard("Total", summary.total_customers, ""),
+    kpiCard("High", summary.high_risk, "high"),
+    kpiCard("Medium", summary.medium_risk, "medium"),
+    kpiCard("Low", summary.low_risk, "low"),
   ]);
   view.appendChild(kpis);
 
   if (!summary.model_available) {
     view.appendChild(
       el("div", { class: "callout callout-warn", style: "margin-bottom:16px;" }, [
-        el("b", {}, "No trained model loaded. "),
-        "Risk scores, drivers, and recommendations are unavailable until model/churn_model.joblib and model/preprocessing.joblib are added. See model/README.md.",
+        "Model missing — add model/*.joblib.",
       ])
     );
   }
@@ -196,12 +271,12 @@ async function renderDashboard(view) {
 
   // High-risk customer list
   const highRiskCard = el("div", { class: "card card-pad" });
-  highRiskCard.appendChild(el("div", { class: "section-title" }, "High-risk customers"));
+  highRiskCard.appendChild(el("div", { class: "section-title" }, "High risk"));
   if (!summary.high_risk_customers.length) {
-    highRiskCard.appendChild(el("div", { class: "empty-state small" }, "No high-risk customers right now."));
+    highRiskCard.appendChild(el("div", { class: "empty-state small" }, "None."));
   } else {
     const table = el("table", {}, [
-      el("thead", {}, el("tr", {}, [el("th", {}, "Customer"), el("th", {}, "Churn probability")])),
+      el("thead", {}, el("tr", {}, [el("th", {}, "Customer"), el("th", {}, "Churn")])),
     ]);
     const tbody = el("tbody");
     summary.high_risk_customers.forEach((c) => {
@@ -221,7 +296,7 @@ async function renderDashboard(view) {
   const eventsCard = el("div", { class: "card card-pad" });
   eventsCard.appendChild(el("div", { class: "section-title" }, "Recent events"));
   if (!summary.recent_events.length) {
-    eventsCard.appendChild(el("div", { class: "empty-state small" }, "No events yet. Start the event generator from the Digital Twin view."));
+    eventsCard.appendChild(el("div", { class: "empty-state small" }, "No events."));
   } else {
     const timeline = el("div", { class: "timeline" });
     summary.recent_events.forEach((e) => {
@@ -259,8 +334,8 @@ async function renderCustomers(view) {
   view.innerHTML = "";
 
   const searchRow = el("div", { class: "row", style: "margin-bottom:12px;" }, [
-    el("input", { type: "text", placeholder: "Search customers…", id: "customer-search", style: "width:280px;" }),
-    el("span", { class: "small muted" }, `${data.total} customers loaded from the prototype dataset`),
+    el("input", { type: "text", placeholder: "Search…", id: "customer-search", style: "width:280px;" }),
+    el("span", { class: "small muted" }, `${data.total} customers`),
   ]);
   view.appendChild(searchRow);
 
@@ -274,7 +349,7 @@ async function renderCustomers(view) {
         el("th", {}, "Region"),
         el("th", {}, "Age"),
         el("th", {}, "Risk"),
-        el("th", {}, "Churn probability"),
+        el("th", {}, "Churn"),
       ])
     ),
   ]);
@@ -285,13 +360,9 @@ async function renderCustomers(view) {
 
   function renderRows(filterText) {
     tbody.innerHTML = "";
-    const filtered = data.customers.filter((c) =>
-      !filterText ||
-      customerLabel(c).toLowerCase().includes(filterText.toLowerCase()) ||
-      c.customer_id.includes(filterText)
-    );
+    const filtered = data.customers.filter((c) => customerMatchesQuery(c, filterText));
     if (!filtered.length) {
-      tbody.appendChild(el("tr", {}, el("td", { colspan: "5", class: "empty-state" }, "No customers match your search.")));
+      tbody.appendChild(el("tr", {}, el("td", { colspan: "5", class: "empty-state" }, "No matches.")));
       return;
     }
     filtered.forEach((c) => {
@@ -339,7 +410,7 @@ async function renderTwin(view, customerId) {
   if (customerId) {
     await renderTwinDetail(container, customerId);
   } else {
-    container.appendChild(el("div", { class: "card card-pad empty-state" }, "Select a customer to view their Digital Twin."));
+    container.appendChild(el("div", { class: "card card-pad empty-state" }, "Select a customer."));
   }
 }
 
@@ -347,7 +418,7 @@ function buildCustomerSelect(selectedId) {
   const select = el("select", {
     onchange: (e) => (location.hash = `#/twin/${e.target.value}`),
   });
-  select.appendChild(el("option", { value: "" }, "Select a customer…"));
+  select.appendChild(el("option", { value: "" }, "Select…"));
   state.customers.forEach((c) => {
     const opt = el("option", { value: c.customer_id }, `${customerLabel(c)}`);
     if (c.customer_id === selectedId) opt.setAttribute("selected", "selected");
@@ -357,7 +428,7 @@ function buildCustomerSelect(selectedId) {
 }
 
 async function renderTwinDetail(container, customerId) {
-  container.innerHTML = '<div class="spinner">Loading customer twin…</div>';
+  container.innerHTML = '<div class="spinner">Loading…</div>';
 
   const [twin, riskResult, recResult] = await Promise.allSettled([
     apiGet(`/customers/${customerId}/twin`),
@@ -367,29 +438,52 @@ async function renderTwinDetail(container, customerId) {
 
   container.innerHTML = "";
   if (twin.status !== "fulfilled") {
-    container.appendChild(el("div", { class: "card card-pad" }, "Customer not found."));
+    container.appendChild(el("div", { class: "card card-pad" }, "Not found."));
     return;
   }
   const t = twin.value;
   const s = t.state;
+  const hasRisk = riskResult.status === "fulfilled";
+
+  const stabilityPanel = el("div", { class: "stability-panel", hidden: "hidden" });
+  const recMcLine = el("div", { class: "rec-mc-line", hidden: "hidden" });
+
+  const pointCol = el("div", { class: "metric-point" });
+  if (hasRisk) {
+    pointCol.appendChild(el("div", { class: "small muted" }, "Churn"));
+    pointCol.appendChild(riskBadge(riskResult.value.risk_level));
+    pointCol.appendChild(el("div", { class: "churn-num" }, pct(riskResult.value.churn_probability)));
+  } else {
+    pointCol.appendChild(el("div", { class: "small muted" }, "Unscored"));
+  }
 
   const header = el("div", { class: "card card-pad", style: "margin-bottom:16px;" }, [
-    el("div", { class: "spread" }, [
+    el("div", { class: "twin-metrics" }, [
       el("div", {}, [
-        el("div", { style: "font-size:16px;font-weight:700;color:var(--navy);" }, `${s.policy_type} policy · ${s.region_name}`),
-        el("div", { class: "small muted" }, `Age ${s.age} · ${s.marital_status} · ${s.customer_tenure_months} months tenure · ${s.num_policies} polic${s.num_policies === 1 ? "y" : "ies"}`),
+        el("div", { class: "twin-heading" }, `${s.policy_type} policy · ${s.region_name}`),
+        el("div", { class: "small muted" }, `${s.age} · ${s.marital_status} · ${s.customer_tenure_months} mo · ${s.num_policies} ${s.num_policies === 1 ? "policy" : "policies"}`),
         el("div", { class: "mono small", style: "margin-top:4px;" }, `${s.customer_id} · twin v${s.version}`),
       ]),
-      el(
-        "div",
-        { style: "text-align:right;" },
-        riskResult.status === "fulfilled"
-          ? [riskBadge(riskResult.value.risk_level), el("div", { class: "mono", style: "font-size:20px;margin-top:6px;" }, pct(riskResult.value.churn_probability))]
-          : el("div", { class: "small muted" }, "Risk score unavailable (model not loaded)")
-      ),
+      el("div", { class: "spread", style: "gap:20px;align-items:flex-start;" }, [pointCol, stabilityPanel]),
     ]),
   ]);
   container.appendChild(header);
+
+  if (hasRisk) {
+    stabilityPanel.hidden = false;
+    stabilityPanel.appendChild(el("div", { class: "stability-title" }, "Stability range (±10% premium)"));
+    stabilityPanel.appendChild(el("div", { class: "spinner" }, "Running…"));
+    fetchBaselineMonteCarlo(customerId, s.current_premium)
+      .then((mc) => {
+        fillStabilityPanel(stabilityPanel, mc);
+        recMcLine.hidden = false;
+        recMcLine.textContent = recMcLineText(riskResult.value.churn_probability, mc);
+      })
+      .catch(() => {
+        stabilityPanel.hidden = true;
+        stabilityPanel.innerHTML = "";
+      });
+  }
 
   const twoCol = el("div", { class: "two-col" });
 
@@ -400,60 +494,60 @@ async function renderTwinDetail(container, customerId) {
 
   const fieldGroups = [
     {
-      title: "Profile (static)",
+      title: "Profile",
       fields: [
         ["Age", s.age],
         ["Region", s.region_name],
         ["Marital status", s.marital_status],
         ["Tenure (months)", s.customer_tenure_months],
         ["Multi-policy", s.multi_policy_flag ? "Yes" : "No"],
-        ["Num policies", s.num_policies],
+        ["Policies", s.num_policies],
         ["Payment frequency", s.payment_frequency],
         ["Autopay enabled", s.autopay_enabled ? "Yes" : "No"],
         ["Renewal month", s.renewal_month],
       ],
     },
     {
-      title: "Premium & coverage (dynamic)",
+      title: "Premium & coverage",
       fields: [
         ["Current premium", "$" + s.current_premium.toFixed(2)],
         ["Premium last year", "$" + s.premium_last_year.toFixed(2)],
-        ["Premium change %", pct(s.premium_change_pct)],
+        ["Premium change", pct(s.premium_change_pct)],
         ["Price increases (3y)", s.num_price_increases_last_3y],
-        ["Coverage amount", "$" + s.coverage_amount.toFixed(0)],
-        ["Premium/coverage ratio", s.premium_to_coverage_ratio.toFixed(4)],
-        ["Coverage downgraded", s.coverage_downgrade_flag ? "Yes" : "No"],
+        ["Coverage", "$" + s.coverage_amount.toFixed(0)],
+        ["Premium / coverage", s.premium_to_coverage_ratio.toFixed(4)],
+        ["Downgraded", s.coverage_downgrade_flag ? "Yes" : "No"],
       ],
     },
     {
-      title: "Payment behavior (dynamic)",
+      title: "Payments",
       fields: [
         ["Late payments (12m)", s.late_payment_count_12m],
-        ["Missed payment flag", s.missed_payment_flag ? "Yes" : "No"],
-        ["Payment method changed", s.payment_method_change_flag ? "Yes" : "No"],
+        ["Missed payment", s.missed_payment_flag ? "Yes" : "No"],
+        ["Payment method change", s.payment_method_change_flag ? "Yes" : "No"],
       ],
     },
     {
-      title: "Claims (last 12 months, dynamic)",
+      title: "Claims (12m)",
       fields: [
-        ["Claims filed", s.num_claims_12m],
+        ["Filed", s.num_claims_12m],
         ["Approved", s.num_approved_claims_12m],
         ["Rejected", s.num_rejected_claims_12m],
         ["Pending", s.num_pending_claims_12m],
-        ["Avg claim amount", "$" + s.avg_claim_amount.toFixed(2)],
-        ["Total claim amount", "$" + s.total_claim_amount_12m.toFixed(2)],
-        ["Total payout amount", "$" + s.total_payout_amount_12m.toFixed(2)],
+        ["Avg claim", "$" + s.avg_claim_amount.toFixed(2)],
+        ["Total claims", "$" + s.total_claim_amount_12m.toFixed(2)],
+        ["Total payout", "$" + s.total_payout_amount_12m.toFixed(2)],
         ["Payout ratio", s.payout_ratio_12m.toFixed(3)],
-        ["Avg settlement (days)", s.avg_settlement_time_days],
-        ["Days since last claim", s.days_since_last_claim],
+        ["Settlement (days)", s.avg_settlement_time_days],
+        ["Days since last", s.days_since_last_claim],
       ],
     },
     {
-      title: "Engagement & service (dynamic)",
+      title: "Engagement",
       fields: [
         ["Contacts (12m)", s.num_contacts_12m],
-        ["Complaint lodged", s.complaint_flag ? "Yes" : "No"],
-        ["Complaint resolution (days)", s.complaint_resolution_days],
+        ["Complaint", s.complaint_flag ? "Yes" : "No"],
+        ["Resolution (days)", s.complaint_resolution_days],
         ["Quote requested", s.quote_requested_flag ? "Yes" : "No"],
       ],
     },
@@ -473,7 +567,7 @@ async function renderTwinDetail(container, customerId) {
 
   // Drivers + recommendation
   const recCard = el("div", { class: "card card-pad" });
-  recCard.appendChild(el("div", { class: "section-title" }, "Risk drivers & recommendation"));
+  recCard.appendChild(el("div", { class: "section-title" }, "Drivers & action"));
   if (recResult.status === "fulfilled") {
     const rec = recResult.value;
     const maxImportance = Math.max(...rec.top_drivers.map((d) => d.combined_score), 0.0001);
@@ -489,27 +583,22 @@ async function renderTwinDetail(container, customerId) {
       el("div", { class: "callout callout-teal", style: "margin-top:12px;" }, [
         el("div", { style: "font-weight:700;margin-bottom:4px;" }, rec.recommended_action.label),
         el("div", {}, rec.recommended_action.description),
-        el("div", { class: "small", style: "margin-top:6px;opacity:0.85;" }, `Expected value (assumption-based): ${rec.recommended_action.expected_value.toFixed(2)}`),
+        el("div", { class: "small", style: "margin-top:6px;opacity:0.85;" }, `EV (MVP): ${rec.recommended_action.expected_value.toFixed(2)}`),
+        recMcLine,
       ])
     );
   } else {
-    recCard.appendChild(el("div", { class: "empty-state small" }, "Recommendations unavailable (model not loaded)."));
+    recCard.appendChild(el("div", { class: "empty-state small" }, "No recommendations."));
   }
   twoCol.appendChild(recCard);
 
   container.appendChild(twoCol);
 
-  // Event timeline + generator controls
   const eventsCard = el("div", { class: "card card-pad", style: "margin-top:16px;" });
-  eventsCard.appendChild(
-    el("div", { class: "spread" }, [
-      el("div", { class: "section-title" }, "Recent events"),
-      genControls(),
-    ])
-  );
+  eventsCard.appendChild(el("div", { class: "section-title" }, "Recent events"));
   const events = t.state.event_history.slice().reverse();
   if (!events.length) {
-    eventsCard.appendChild(el("div", { class: "empty-state small" }, "No events yet for this customer."));
+    eventsCard.appendChild(el("div", { class: "empty-state small" }, "None."));
   } else {
     const timeline = el("div", { class: "timeline" });
     events.forEach((e) => {
@@ -529,59 +618,389 @@ async function renderTwinDetail(container, customerId) {
   container.appendChild(eventsCard);
 }
 
-function genControls() {
-  const startBtn = el("button", { class: "btn btn-primary" }, "Start generator");
-  const stopBtn = el("button", { class: "btn" }, "Stop generator");
-  startBtn.addEventListener("click", async () => {
-    await apiPost("/event-generator/start", {});
-    router();
-  });
-  stopBtn.addEventListener("click", async () => {
-    await apiPost("/event-generator/stop", {});
-    router();
-  });
-  return el("div", { class: "row" }, [startBtn, stopBtn]);
-}
-
 // ---------------------------------------------------------------- simulation
 
 const SCENARIOS = [
   {
     id: "payment_missed",
     label: "Payment missed",
-    fields: [{ key: "count", label: "Number of missed payments", type: "number", default: 1 }],
+    fields: [{ key: "count", label: "Count", type: "number", default: 1 }],
   },
   {
     id: "claim_created",
-    label: "New claim filed",
+    label: "Claim",
     fields: [
-      { key: "claim_amount", label: "Claim amount ($)", type: "number", default: 2000 },
+      { key: "claim_amount", label: "Amount ($)", type: "number", default: 2000 },
       { key: "outcome", label: "Outcome", type: "select", options: ["approved", "rejected", "pending"], default: "approved" },
-      { key: "settlement_time_days", label: "Settlement time (days)", type: "number", default: 14 },
+      { key: "settlement_time_days", label: "Settlement (days)", type: "number", default: 14 },
     ],
   },
   {
     id: "premium_changed",
     label: "Premium changed",
-    fields: [{ key: "change_pct", label: "Change (%, e.g. 0.15 = +15%)", type: "number", default: 0.15, step: "0.01" }],
+    fields: [{ key: "change_pct", label: "Change (e.g. 0.15)", type: "number", default: 0.15, step: "0.01" }],
   },
-  { id: "policy_renewed", label: "Policy renewed (resets 12m counters)", fields: [] },
+  { id: "policy_renewed", label: "Policy renewed", fields: [] },
   {
     id: "engagement_changed",
-    label: "Customer engagement changed",
-    fields: [{ key: "contact_delta", label: "Additional contacts", type: "number", default: 1 }],
+    label: "Engagement",
+    fields: [{ key: "contact_delta", label: "Contacts", type: "number", default: 1 }],
   },
   {
     id: "coverage_downgraded",
-    label: "Coverage downgraded",
-    fields: [{ key: "reduction_pct", label: "Reduction (%, e.g. 0.2 = -20%)", type: "number", default: 0.2, step: "0.01" }],
+    label: "Coverage downgrade",
+    fields: [{ key: "reduction_pct", label: "Cut (e.g. 0.2)", type: "number", default: 0.2, step: "0.01" }],
   },
   {
     id: "complaint_lodged",
-    label: "Complaint lodged",
-    fields: [{ key: "resolution_days", label: "Resolution time (days)", type: "number", default: 7 }],
+    label: "Complaint",
+    fields: [{ key: "resolution_days", label: "Resolution (days)", type: "number", default: 7 }],
   },
 ];
+
+function renderScenarioFields(container, scenarioId) {
+  container.innerHTML = "";
+  const scenario = SCENARIOS.find((s) => s.id === scenarioId);
+  if (!scenario || !scenario.fields.length) return;
+  scenario.fields.forEach((f) => {
+    let input;
+    if (f.type === "select") {
+      input = buildPlainSelect(f.options.map((o) => [o, String(o)]), f.default);
+      input.dataset.key = f.key;
+    } else {
+      const attrs = { type: "number", value: f.default ?? "", "data-key": f.key };
+      if (f.step) attrs.step = f.step;
+      input = el("input", attrs);
+    }
+    container.appendChild(el("div", { class: "field" }, [el("label", {}, f.label), input]));
+  });
+}
+
+function collectScenarioParams(container) {
+  const params = {};
+  container.querySelectorAll("[data-key]").forEach((input) => {
+    const key = input.dataset.key;
+    const raw = input.value;
+    params[key] = isNaN(Number(raw)) || raw === "" ? raw : Number(raw);
+  });
+  return params;
+}
+
+function sourceBadge(source) {
+  const isManual = source === "manual";
+  return el("span", { class: `badge ${isManual ? "badge-manual" : "badge-generator"}` }, isManual ? "Manual" : "Auto");
+}
+
+function feedItemEl(entry) {
+  return el("div", { class: "timeline-item", "data-event-id": entry.event_id || "" }, [
+    el("div", { class: "timeline-dot" }),
+    el("div", { class: "timeline-body" }, [
+      el("div", { class: "spread" }, [
+        el("div", {}, [
+          el("b", {}, eventLabel(entry.event_type)),
+          " · ",
+          el("span", { class: "mono" }, entry.customer_id || ""),
+        ]),
+        sourceBadge(entry.source),
+      ]),
+      el("div", { class: "small muted" }, entry.description || ""),
+      el("div", { class: "timeline-time" }, fmtTime(entry.occurred_at)),
+    ]),
+  ]);
+}
+
+// ---------------------------------------------------------------- events
+
+async function renderEvents(view) {
+  view.innerHTML = "";
+  if (!state.customers.length) {
+    state.customers = (await apiGet("/customers")).customers;
+    if (state.modelAvailable === null) state.modelAvailable = state.customers.some((c) => c.risk_level !== null);
+  }
+  if (currentRoute().route !== "events") return;
+
+  const feedEntries = [];
+  const seenIds = new Set();
+  const sourceById = {};
+
+  const stack = el("div", { class: "events-stack" });
+
+  const statusCard = el("div", { class: "card card-pad" });
+  statusCard.appendChild(el("div", { class: "section-title" }, "Live event source"));
+  const statusBody = el("div", { id: "gen-status-body" });
+  statusCard.appendChild(statusBody);
+
+  const intervalInput = el("input", { type: "number", value: "5", min: "1", max: "60", step: "1" });
+  const checksWrap = el("div", { class: "scenario-checks" });
+  SCENARIOS.forEach((s) => {
+    const box = el("input", { type: "checkbox", value: s.id, checked: "checked" });
+    checksWrap.appendChild(el("label", { class: "scenario-check" }, [box, s.label]));
+  });
+
+  statusCard.appendChild(
+    el("div", { class: "grid-2", style: "margin-top:16px;" }, [
+      el("div", { class: "field" }, [el("label", {}, "Interval (s)"), intervalInput]),
+      el("div", { class: "field" }, [el("label", {}, "Types"), checksWrap]),
+    ])
+  );
+
+  const startBtn = el("button", { class: "btn btn-primary" }, "Start");
+  const stopBtn = el("button", { class: "btn" }, "Stop");
+  statusCard.appendChild(el("div", { class: "row", style: "margin-top:16px;" }, [startBtn, stopBtn]));
+  stack.appendChild(statusCard);
+
+  const fireCard = el("div", { class: "card card-pad" });
+  fireCard.appendChild(el("div", { class: "section-title" }, "Fire event"));
+  const customerSearch = el("input", { type: "text", placeholder: "Search…", style: "width:280px;" });
+  const customerSelect = el("select");
+  const eventTypeSelect = buildPlainSelect(SCENARIOS.map((s) => [s.id, s.label]), SCENARIOS[0].id);
+  const payloadFields = el("div", { class: "grid-3", style: "margin-top:12px;" });
+
+  function fillCustomerSelect(query) {
+    const previous = customerSelect.value;
+    customerSelect.innerHTML = "";
+    const matches = state.customers.filter((c) => customerMatchesQuery(c, query));
+    if (!matches.length) {
+      customerSelect.appendChild(el("option", { value: "" }, "No matches"));
+      return;
+    }
+    matches.forEach((c) => {
+      const opt = el("option", { value: c.customer_id }, customerLabel(c));
+      customerSelect.appendChild(opt);
+    });
+    if (matches.some((c) => c.customer_id === previous)) customerSelect.value = previous;
+  }
+
+  fillCustomerSelect("");
+  customerSearch.addEventListener("input", () => fillCustomerSelect(customerSearch.value));
+  eventTypeSelect.addEventListener("change", () => renderScenarioFields(payloadFields, eventTypeSelect.value));
+  renderScenarioFields(payloadFields, eventTypeSelect.value);
+
+  fireCard.appendChild(
+    el("div", { class: "row", style: "margin-bottom:12px;" }, [
+      el("div", { class: "field" }, [el("label", {}, "Search"), customerSearch]),
+      el("div", { class: "field" }, [el("label", {}, "Customer"), customerSelect]),
+      el("div", { class: "field" }, [el("label", {}, "Event type"), eventTypeSelect]),
+    ])
+  );
+  fireCard.appendChild(payloadFields);
+  const fireBtn = el("button", { class: "btn btn-primary" }, "Fire");
+  const fireNote = el("div");
+  fireCard.appendChild(el("div", { class: "row", style: "margin-top:16px;" }, [fireBtn]));
+  fireCard.appendChild(fireNote);
+  stack.appendChild(fireCard);
+
+  const feedCard = el("div", { class: "card card-pad" });
+  const liveIndicator = el("span", { class: "live-indicator", hidden: "hidden" }, [
+    el("span", { class: "pulse" }),
+    "Live",
+  ]);
+  feedCard.appendChild(
+    el("div", { class: "spread" }, [
+      el("div", { class: "section-title", style: "margin-bottom:0;" }, "Feed"),
+      liveIndicator,
+    ])
+  );
+  const feedList = el("div", { class: "timeline", style: "margin-top:16px;" });
+  const feedEmpty = el("div", { class: "empty-state small" }, "No events.");
+  feedCard.appendChild(feedEmpty);
+  feedCard.appendChild(feedList);
+  stack.appendChild(feedCard);
+
+  view.appendChild(stack);
+
+  function selectedScenarios() {
+    return Array.from(checksWrap.querySelectorAll("input[type=checkbox]:checked")).map((box) => box.value);
+  }
+
+  function applyStatusToForm(status, syncForm) {
+    if (syncForm) {
+      if (status.interval_seconds != null) intervalInput.value = String(status.interval_seconds);
+      if (Array.isArray(status.scenarios) && status.scenarios.length) {
+        const allowed = new Set(status.scenarios);
+        checksWrap.querySelectorAll("input[type=checkbox]").forEach((box) => {
+          box.checked = allowed.has(box.value);
+        });
+      }
+    }
+    statusBody.innerHTML = "";
+    const running = !!status.running;
+    statusBody.appendChild(
+      el("div", { class: "grid-3" }, [
+        el("div", {}, [
+          el("div", { class: "small muted" }, "Status"),
+          el("div", { class: "kpi-value", style: "font-size:22px;" }, running ? "Running" : "Stopped"),
+        ]),
+        el("div", {}, [
+          el("div", { class: "small muted" }, "Interval"),
+          el("div", { class: "mono" }, `${status.interval_seconds}s`),
+        ]),
+        el("div", {}, [
+          el("div", { class: "small muted" }, "Generated"),
+          el("div", { class: "kpi-value", style: "font-size:22px;" }, String(status.events_generated ?? 0)),
+        ]),
+      ])
+    );
+    statusBody.appendChild(
+      el("div", { class: "small muted", style: "margin-top:12px;" }, `Types: ${(status.scenarios || []).join(", ") || "—"}`)
+    );
+    startBtn.disabled = running;
+    stopBtn.disabled = !running;
+  }
+
+  function setLive(on) {
+    liveIndicator.hidden = !on;
+  }
+
+  function paintFeed() {
+    feedList.innerHTML = "";
+    if (!feedEntries.length) {
+      feedEmpty.hidden = false;
+      return;
+    }
+    feedEmpty.hidden = true;
+    feedEntries.forEach((entry) => feedList.appendChild(feedItemEl(entry)));
+  }
+
+  function prependFeed(entry) {
+    if (!entry) return;
+    if (entry.event_id && seenIds.has(entry.event_id)) return;
+    if (entry.event_id) seenIds.add(entry.event_id);
+    if (entry.source) sourceById[entry.event_id] = entry.source;
+    feedEntries.unshift(entry);
+    if (feedEntries.length > EVENTS_FEED_CAP) {
+      const dropped = feedEntries.splice(EVENTS_FEED_CAP);
+      dropped.forEach((d) => {
+        if (d.event_id) seenIds.delete(d.event_id);
+      });
+    }
+    paintFeed();
+  }
+
+  function mergePolledEvents(recent) {
+    const incoming = [];
+    (recent || []).forEach((e) => {
+      if (!e.event_id || seenIds.has(e.event_id)) return;
+      incoming.push({
+        event_id: e.event_id,
+        customer_id: e.customer_id,
+        event_type: e.event_type,
+        description: e.description,
+        occurred_at: e.occurred_at,
+        source: sourceById[e.event_id] || "event_generator",
+      });
+    });
+    if (!incoming.length) return;
+    incoming.sort((a, b) => String(b.occurred_at).localeCompare(String(a.occurred_at)));
+    incoming.reverse().forEach((entry) => prependFeed(entry));
+  }
+
+  function startPolling() {
+    if (viewPollTimer != null) return;
+    setLive(true);
+    viewPollTimer = setInterval(async () => {
+      if (currentRoute().route !== "events") {
+        stopViewTimers();
+        return;
+      }
+      try {
+        const status = await apiGet("/event-generator/status");
+        if (currentRoute().route !== "events") return;
+        applyStatusToForm(status, false);
+        refreshTopbar();
+        if (!status.running) {
+          stopViewTimers();
+          setLive(false);
+          return;
+        }
+        const summary = await apiGet("/dashboard/summary");
+        if (currentRoute().route !== "events") return;
+        mergePolledEvents(summary.recent_events);
+      } catch {
+        /* keep the last known feed */
+      }
+    }, EVENTS_POLL_MS);
+  }
+
+  startBtn.addEventListener("click", async () => {
+    const scenarios = selectedScenarios();
+    if (!scenarios.length) return alert("Pick at least one type.");
+    try {
+      const status = await apiPost("/event-generator/start", {
+        interval_seconds: Number(intervalInput.value) || 5,
+        scenarios,
+      });
+      applyStatusToForm(status, true);
+      refreshTopbar();
+      startPolling();
+    } catch (err) {
+      alert(err.detail || err.message || "Start failed.");
+    }
+  });
+
+  stopBtn.addEventListener("click", async () => {
+    try {
+      const status = await apiPost("/event-generator/stop", {});
+      applyStatusToForm(status, true);
+      refreshTopbar();
+      stopViewTimers();
+      setLive(false);
+    } catch (err) {
+      alert(err.detail || err.message || "Stop failed.");
+    }
+  });
+
+  fireBtn.addEventListener("click", async () => {
+    const customerId = customerSelect.value;
+    if (!customerId) return alert("Pick a customer.");
+    fireNote.innerHTML = "";
+    try {
+      const result = await apiPost("/events", {
+        customer_id: customerId,
+        event_type: eventTypeSelect.value,
+        payload: collectScenarioParams(payloadFields),
+        source: "manual",
+      });
+      let latest = null;
+      try {
+        const history = await apiGet(`/customers/${customerId}/events`);
+        const list = history.events || [];
+        latest = [...list].reverse().find((e) => e.event_type === eventTypeSelect.value) || list[list.length - 1] || null;
+      } catch {
+        latest = null;
+      }
+      const entry = {
+        event_id: latest?.event_id || `manual-${Date.now()}`,
+        customer_id: customerId,
+        event_type: eventTypeSelect.value,
+        description: latest?.description || eventLabel(eventTypeSelect.value),
+        occurred_at: latest?.occurred_at || new Date().toISOString(),
+        source: "manual",
+      };
+      prependFeed(entry);
+      fireNote.appendChild(
+        el(
+          "div",
+          { class: "fire-confirm" },
+          `${entry.description} · ${customerId} · twin v${result.twin_version}`
+        )
+      );
+    } catch (err) {
+      fireNote.appendChild(el("div", { class: "fire-error" }, err.detail || err.message || "Fire failed."));
+    }
+  });
+
+  try {
+    const [status, summary] = await Promise.all([apiGet("/event-generator/status"), apiGet("/dashboard/summary")]);
+    applyStatusToForm(status, true);
+    mergePolledEvents(summary.recent_events);
+    if (currentRoute().route !== "events") return;
+    if (status.running) startPolling();
+    else setLive(false);
+  } catch {
+    applyStatusToForm({ running: false, interval_seconds: 5, scenarios: SCENARIOS.map((s) => s.id), events_generated: 0 }, true);
+  }
+}
 
 async function renderSimulation(view, customerIdParam) {
   view.innerHTML = "";
@@ -600,22 +1019,8 @@ async function renderSimulation(view, customerIdParam) {
   const trialsInput = el("input", { type: "number", value: "300", min: "10", max: "5000" });
   const noiseInput = el("input", { type: "number", value: "0.10", step: "0.01", min: "0", max: "1" });
 
-  function renderParamFields() {
-    paramsContainer.innerHTML = "";
-    const scenario = SCENARIOS.find((s) => s.id === scenarioSelect.value);
-    scenario.fields.forEach((f) => {
-      let input;
-      if (f.type === "select") {
-        input = buildPlainSelect(f.options.map((o) => [o, String(o)]), f.default);
-        input.dataset.key = f.key;
-      } else {
-        input = el("input", { type: "number", value: f.default ?? "", "data-key": f.key });
-      }
-      paramsContainer.appendChild(el("div", { class: "field" }, [el("label", {}, f.label), input]));
-    });
-  }
-  scenarioSelect.addEventListener("change", renderParamFields);
-  renderParamFields();
+  scenarioSelect.addEventListener("change", () => renderScenarioFields(paramsContainer, scenarioSelect.value));
+  renderScenarioFields(paramsContainer, scenarioSelect.value);
 
   form.appendChild(
     el("div", { class: "grid-3" }, [
@@ -627,58 +1032,58 @@ async function renderSimulation(view, customerIdParam) {
   form.appendChild(paramsContainer);
 
   const runRow = el("div", { class: "row", style: "margin-top:16px;" });
-  const detBtn = el("button", { class: "btn btn-primary" }, "Run deterministic simulation");
-  const mcBtn = el("button", { class: "btn" }, "Run Monte Carlo simulation");
-  runRow.appendChild(detBtn);
-  runRow.appendChild(mcBtn);
-  runRow.appendChild(el("div", { class: "field" }, [el("label", {}, "MC trials"), trialsInput]));
-  runRow.appendChild(el("div", { class: "field" }, [el("label", {}, "Numeric noise (std)"), noiseInput]));
+  const runBtn = el("button", { class: "btn btn-primary" }, "Run simulation");
+  runRow.appendChild(runBtn);
   form.appendChild(runRow);
+
+  const advanced = el("details", { class: "advanced-block" });
+  advanced.appendChild(el("summary", {}, "Advanced"));
+  advanced.appendChild(
+    el("div", { class: "advanced-fields" }, [
+      el("div", { class: "field" }, [el("label", {}, "MC trials"), trialsInput]),
+      el("div", { class: "field" }, [el("label", {}, "Noise (std)"), noiseInput]),
+    ])
+  );
+  form.appendChild(advanced);
 
   view.appendChild(form);
 
   const resultsContainer = el("div", { id: "sim-results", style: "margin-top:16px;" });
   view.appendChild(resultsContainer);
 
-  function collectParams() {
-    const params = {};
-    paramsContainer.querySelectorAll("[data-key]").forEach((input) => {
-      const key = input.dataset.key;
-      const raw = input.value;
-      params[key] = isNaN(Number(raw)) || raw === "" ? raw : Number(raw);
+  runBtn.addEventListener("click", async () => {
+    const customerId = customerSelect.value;
+    if (!customerId) return alert("Pick a customer.");
+    const scenario = scenarioSelect.value;
+    const parameters = collectScenarioParams(paramsContainer);
+    const trials = Number(trialsInput.value) || 300;
+    const numeric_noise_std = Number(noiseInput.value) || 0.1;
+
+    resultsContainer.innerHTML = '<div class="spinner">Running…</div>';
+
+    const detPromise = apiPost(`/customers/${customerId}/simulate`, { scenario, parameters });
+    const mcPromise = apiPost(`/customers/${customerId}/simulate/monte-carlo`, {
+      scenario,
+      parameters,
+      trials,
+      numeric_noise_std,
     });
-    return params;
-  }
 
-  detBtn.addEventListener("click", async () => {
-    const customerId = customerSelect.value;
-    if (!customerId) return alert("Select a customer first.");
-    resultsContainer.innerHTML = '<div class="spinner">Running deterministic simulation…</div>';
+    let detResult;
     try {
-      const result = await apiPost(`/customers/${customerId}/simulate`, {
-        scenario: scenarioSelect.value,
-        parameters: collectParams(),
-      });
-      renderDeterministicResult(resultsContainer, result);
+      detResult = await detPromise;
     } catch (err) {
       renderSimError(resultsContainer, err);
+      return;
     }
-  });
 
-  mcBtn.addEventListener("click", async () => {
-    const customerId = customerSelect.value;
-    if (!customerId) return alert("Select a customer first.");
-    resultsContainer.innerHTML = '<div class="spinner">Running Monte Carlo simulation…</div>';
+    renderCombinedSimulationResult(resultsContainer, detResult, null, true);
+
     try {
-      const result = await apiPost(`/customers/${customerId}/simulate/monte-carlo`, {
-        scenario: scenarioSelect.value,
-        parameters: collectParams(),
-        trials: Number(trialsInput.value) || 300,
-        numeric_noise_std: Number(noiseInput.value) || 0.1,
-      });
-      renderMonteCarloResult(resultsContainer, result);
+      const mcResult = await mcPromise;
+      renderCombinedSimulationResult(resultsContainer, detResult, mcResult, false);
     } catch (err) {
-      renderSimError(resultsContainer, err);
+      renderCombinedSimulationResult(resultsContainer, detResult, null, false, err);
     }
   });
 }
@@ -700,64 +1105,52 @@ function renderSimError(container, err) {
   );
 }
 
-function renderDeterministicResult(container, result) {
+function renderCombinedSimulationResult(container, detResult, mcResult, mcLoading, mcError) {
   container.innerHTML = "";
-  const diff = result.difference;
+  const diff = detResult.difference;
   const diffClass = diff > 0 ? "diff-up" : diff < 0 ? "diff-down" : "";
   const card = el("div", { class: "card card-pad" });
-  card.appendChild(el("div", { class: "section-title" }, "Deterministic what-if result"));
+  card.appendChild(el("div", { class: "section-title" }, "Result"));
   card.appendChild(
     el("div", { class: "grid-3" }, [
-      el("div", {}, [el("div", { class: "small muted" }, "Before"), el("div", { class: "mono", style: "font-size:22px;" }, pct(result.before.churn_probability)), riskBadge(result.before.risk_level)]),
-      el("div", {}, [el("div", { class: "small muted" }, "After"), el("div", { class: "mono", style: "font-size:22px;" }, pct(result.after.churn_probability)), riskBadge(result.after.risk_level)]),
-      el("div", {}, [el("div", { class: "small muted" }, "Difference"), el("div", { class: `mono ${diffClass}`, style: "font-size:22px;" }, (diff > 0 ? "+" : "") + pct(diff))]),
+      el("div", {}, [el("div", { class: "small muted" }, "Before"), el("div", { class: "kpi-value", style: "font-size:28px;" }, pct(detResult.before.churn_probability)), riskBadge(detResult.before.risk_level)]),
+      el("div", {}, [el("div", { class: "small muted" }, "After"), el("div", { class: "kpi-value", style: "font-size:28px;" }, pct(detResult.after.churn_probability)), riskBadge(detResult.after.risk_level)]),
+      el("div", {}, [el("div", { class: "small muted" }, "Difference"), el("div", { class: `kpi-value ${diffClass}`, style: "font-size:28px;" }, (diff > 0 ? "+" : "") + pct(diff))]),
     ])
   );
   card.appendChild(
-    el("div", { class: "callout callout-teal", style: "margin-top:14px;" }, "The real Twin state was not modified by this simulation — only a cloned copy was scored.")
-  );
-  container.appendChild(card);
-}
-
-function renderMonteCarloResult(container, result) {
-  container.innerHTML = "";
-  const card = el("div", { class: "card card-pad" });
-  card.appendChild(el("div", { class: "section-title" }, `Monte Carlo result (${result.trials} trials)`));
-  card.appendChild(
-    el("div", { class: "grid-3" }, [
-      statBox("Mean", pct(result.mean_churn_probability)),
-      statBox("Median", pct(result.median_churn_probability)),
-      statBox("Std dev", pct(result.std_dev)),
-      statBox("P10", pct(result.p10_churn_probability)),
-      statBox("P90", pct(result.p90_churn_probability)),
-      statBox("Trials", String(result.trials)),
-    ])
+    el("div", { class: "callout callout-teal", style: "margin-top:14px;" }, "Simulation only — real Twin unchanged.")
   );
 
-  // Simple histogram from the distribution sample.
-  const buckets = new Array(20).fill(0);
-  result.distribution_sample.forEach((v) => {
-    const idx = Math.min(19, Math.max(0, Math.floor(v * 20)));
-    buckets[idx] += 1;
-  });
-  const maxBucket = Math.max(...buckets, 1);
-  const hist = el(
-    "div",
-    { class: "hist-bars", style: "margin-top:16px;" },
-    buckets.map((count) => el("div", { class: "hist-bar", style: `height:${(count / maxBucket) * 100}%` }))
-  );
-  card.appendChild(el("div", { class: "small muted", style: "margin-top:14px;" }, "Outcome distribution (churn probability, low → high)"));
-  card.appendChild(hist);
-
-  card.appendChild(
-    el("div", { class: "callout callout-teal", style: "margin-top:14px;" }, [
-      el("div", {}, result.assumptions.source_of_stochasticity),
-      el("div", { class: "small", style: "margin-top:6px;opacity:0.85;" }, result.assumptions.note),
-    ])
-  );
+  const mcSection = el("div", { style: "margin-top:24px;" });
+  mcSection.appendChild(el("div", { class: "section-title" }, "Monte Carlo"));
+  if (mcLoading) {
+    mcSection.appendChild(el("div", { class: "spinner" }, "Running…"));
+  } else if (mcError) {
+    mcSection.appendChild(el("div", { class: "sim-mc-error" }, mcError.detail || mcError.message || "Monte Carlo failed."));
+  } else if (mcResult) {
+    mcSection.appendChild(
+      el("div", { class: "grid-3" }, [
+        statBox("Mean", pct(mcResult.mean_churn_probability)),
+        statBox("Median", pct(mcResult.median_churn_probability)),
+        statBox("Std dev", pct(mcResult.std_dev)),
+        statBox("P10", pct(mcResult.p10_churn_probability)),
+        statBox("P90", pct(mcResult.p90_churn_probability)),
+        statBox("Trials", String(mcResult.trials)),
+      ])
+    );
+    mcSection.appendChild(el("div", { class: "small muted", style: "margin-top:14px;" }, "Churn probability (low → high)"));
+    mcSection.appendChild(histogramEl(mcResult.distribution_sample));
+    if (mcResult.assumptions) {
+      mcSection.appendChild(
+        el("div", { class: "callout callout-teal", style: "margin-top:14px;" }, "MVP: ±10% parameter noise, not model uncertainty.")
+      );
+    }
+  }
+  card.appendChild(mcSection);
   container.appendChild(card);
 }
 
 function statBox(label, value) {
-  return el("div", {}, [el("div", { class: "small muted" }, label), el("div", { class: "mono", style: "font-size:18px;" }, value)]);
+  return el("div", {}, [el("div", { class: "small muted" }, label), el("div", { class: "kpi-value", style: "font-size:20px;" }, value)]);
 }

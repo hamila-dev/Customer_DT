@@ -1,25 +1,4 @@
-"""
-Expected Value Ranker.
-
-Implements, for the MVP:
-
-    EV(a|S) = P(churn) * tau(a,S) * Value(S) - Cost(a)
-
-Where:
-  P(churn)  - the customer's current churn probability from Risk Intelligence
-  tau(a,S)  - the assumed risk reduction (churn-probability points averted)
-              for action a, from EffectEstimator (an MVP assumption)
-  Value(S)  - a configurable assumed customer value (config.DEFAULT_CUSTOMER_VALUE)
-  Cost(a)   - a configurable assumed action cost (config.ASSUMED_ACTION_COST)
-
-This intentionally treats "P(churn) * tau(a,S) * Value(S)" as the assumed
-retained value from taking action a: probability of churn, times the
-fraction of that risk the action is assumed to avert, times what the
-customer is assumed to be worth if retained.
-
-All of Value(S) and Cost(a) are documented prototype assumptions, not real
-business-value data - see config.py.
-"""
+"""Rank candidate retention actions by assumed expected value."""
 
 from __future__ import annotations
 
@@ -34,6 +13,8 @@ import config
 
 @dataclass
 class RankedAction:
+    """Candidate action with its risk, value, cost, and ranking inputs."""
+
     action: CandidateAction
     churn_probability: float
     assumed_risk_reduction: float
@@ -55,6 +36,8 @@ class RankedAction:
 
 
 class ExpectedValueRanker:
+    """Rank actions using assumed benefit minus action cost."""
+
     def __init__(self, estimator: EffectEstimator = effect_estimator):
         self._estimator = estimator
 
@@ -64,6 +47,7 @@ class ExpectedValueRanker:
         churn_probability: float,
         customer_value: float = config.DEFAULT_CUSTOMER_VALUE,
     ) -> List[RankedAction]:
+        """Use churn probability * assumed reduction * value, less cost."""
         ranked: List[RankedAction] = []
 
         for action in candidate_actions:

@@ -1,28 +1,6 @@
-"""
-Monte Carlo Engine.
 
-The Digital Twin Engine is the primary focus of this project, and Monte
-Carlo simulation is a first-class part of it: rather than a single
-simulated churn probability, this engine produces an outcome DISTRIBUTION
-by running the scenario-transformed Twin state through the Random Forest
-many times under documented, configurable uncertainty assumptions.
 
-CRITICAL SEPARATION (see docs/simulation.md):
-  1. ML prediction - the Random Forest's churn_probability for one exact
-     feature vector. This is a real, deterministic model output.
-  2. Simulation uncertainty - for the MVP, uncertainty is introduced by
-     perturbing the scenario's NUMERIC parameters with configurable
-     Gaussian noise (config.MONTE_CARLO_NUMERIC_NOISE_STD) before applying
-     them, then re-running the Random Forest on each perturbed clone.
-
-The Random Forest itself does not define a future-state probability
-distribution - the distribution here comes entirely from the documented
-perturbation assumption in (2), which is clearly labelled as a simulation
-assumption, not a scientific/statistical fact about the customer.
-
-The real Twin is never modified: every trial clones the real state via
-ScenarioTransformer before touching it.
-"""
+"""Run stochastic what-if scenarios against isolated Twin-state clones."""
 
 from __future__ import annotations
 
@@ -38,9 +16,7 @@ from twin_engine.state.twin_state import TwinState
 
 import config
 
-# Scenario parameters treated as "numeric" for perturbation purposes -
-# the monetary/percentage payload fields used by the dataset-grounded
-# events in twin_engine/events/transition_handler.py.
+# Only numeric payloads with meaningful scenario uncertainty are perturbed.
 NUMERIC_SCENARIO_PARAMETERS = {
     "claim_amount",
     "current_premium",
@@ -73,14 +49,15 @@ class MonteCarloResult:
             "p10_churn_probability": round(self.p10, 4),
             "p90_churn_probability": round(self.p90, 4),
             "std_dev": round(self.std_dev, 4),
-            # Distribution is returned rounded and (for large N) downsampled
-            # for a reasonably sized JSON payload / histogram rendering.
+            # Keep the API payload bounded while summary statistics use all trials.
             "distribution_sample": [round(v, 4) for v in self.distribution],
             "assumptions": self.assumptions,
         }
 
 
 class MonteCarloEngine:
+    """Transform and score independent scenario clones in one batch."""
+
     def __init__(
         self,
         transformer: ScenarioTransformer = scenario_transformer,
@@ -95,10 +72,8 @@ class MonteCarloEngine:
             if key in NUMERIC_SCENARIO_PARAMETERS and isinstance(value, (int, float)):
                 noise_factor = rng.gauss(1.0, noise_std)
                 perturbed_value = value * noise_factor
-                # Only floor genuinely non-negative monetary quantities at 0.
-                # "change_pct" is a signed percentage (a premium DECREASE is
-                # legitimate and must stay negative) so it is perturbed but
-                # never clamped.
+                # A percentage change may be negative; monetary amounts and
+                # coverage cannot be below zero.
                 if key in ("claim_amount", "current_premium", "coverage_amount"):
                     perturbed_value = max(0.0, perturbed_value)
                 perturbed[key] = perturbed_value
@@ -123,14 +98,12 @@ class MonteCarloEngine:
                 event_type=scenario.event_type,
                 parameters=perturbed_params,
             )
-            # transformer clones `state` internally - the real Twin is untouched.
             simulated_states.append(self._transformer.transform(state, perturbed_scenario))
 
         probabilities = self._predictor.predict_batch(simulated_states)
         arr = np.array(probabilities, dtype=float)
 
-        # Downsample the returned distribution sample for payload size, while
-        # keeping full-precision summary statistics computed over all trials.
+        # Preserve full statistics while limiting the histogram payload.
         if len(arr) > max_distribution_points:
             sample_idx = np.linspace(0, len(arr) - 1, max_distribution_points).astype(int)
             distribution_sample = arr[sample_idx].tolist()

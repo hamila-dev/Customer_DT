@@ -1,19 +1,6 @@
-"""
-Real-Time Event Generator.
 
-There is no Kafka in this MVP. This module is the local stand-in: a
-background thread that periodically produces simulated customer-domain
-events and pushes them through the exact same path a real event source
-would use (Event -> Event Transition Handler -> Twin State Store -> risk
-recalculation), via the State Synchronizer.
 
-Design note (see docs/architecture.md): this generator only ever
-constructs `Event` objects and hands them to `StateSynchronizer.process_event`.
-It never touches the ML model or a risk score directly - the Random Forest,
-via Risk Intelligence, is what determines the resulting risk. This keeps
-the class swappable for a real Kafka consumer later without redesigning
-anything downstream.
-"""
+"""Generate background customer events through the normal synchronization path."""
 
 from __future__ import annotations
 
@@ -31,7 +18,8 @@ import config
 
 logger = logging.getLogger(__name__)
 
-CLAIM_OUTCOMES = ["approved", "approved", "rejected", "pending"]  # weighted toward "approved"
+# Repeating approved gives the demo a deliberately approval-heavy distribution.
+CLAIM_OUTCOMES = ["approved", "approved", "rejected", "pending"]
 
 
 def _random_event_for_customer(customer_id: str, scenarios: List[str]) -> Event:
@@ -54,17 +42,11 @@ def _random_event_for_customer(customer_id: str, scenarios: List[str]) -> Event:
         payload = {"resolution_days": random.randint(1, 21)}
     elif event_type == EventType.PAYMENT_MISSED:
         payload = {"count": 1}
-    # POLICY_RENEWED needs no extra payload.
-
     return Event(customer_id=customer_id, event_type=event_type, payload=payload, source="event_generator")
 
 
 class EventGenerator:
-    """
-    Background thread that generates simulated events for the customers
-    currently in the Twin State Store, at a configurable interval, using a
-    configurable set of scenario event types.
-    """
+    """Generate events for stored customers at a configurable interval."""
 
     def __init__(
         self,
@@ -124,14 +106,12 @@ class EventGenerator:
             self.scenarios = scenarios
 
 
-# Module-level singleton, started/stopped via the API (POST /events control
-# endpoints) or standalone via `python -m twin_engine.events.event_generator`.
+# Shared generator controlled by the API or the module entry point.
 event_generator = EventGenerator()
 
 
 def run_standalone() -> None:
-    """Entry point for running the generator as its own local process,
-    independent of the FastAPI app (python -m twin_engine.events.event_generator)."""
+    """Run the generator independently of the FastAPI application."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     generator = EventGenerator()
     generator.start()

@@ -1,20 +1,4 @@
-"""
-Bootstrap loader.
 
-Reads data/customer_churn.csv (the insurance policyholder churn dataset -
-see docs/dataset-mapping.md) and initializes the Twin State Store with one
-TwinState per customer row, up to config.MAX_CUSTOMERS_TO_LOAD (default
-300) rows.
-
-This dataset is a PUBLIC/SYNTHETIC PROTOTYPE DATASET, not real Insurise
-production data (see docs/dataset-mapping.md and the README). It DOES
-include a real `customer_id` column (unlike the previous prototype
-dataset), which is used directly as the Twin's customer_id.
-
-Only runs (populates the store) if the store is currently empty, so
-restarting the API does not silently reset events you've already
-generated during a demo session (state persists in storage/twin_states.json).
-"""
 
 from __future__ import annotations
 

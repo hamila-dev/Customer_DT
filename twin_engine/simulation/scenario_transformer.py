@@ -1,22 +1,6 @@
-"""
-Scenario Transformer.
 
-Implements S'_t = T(S_t, theta):
-  1. Clone the current Twin state.
-  2. Apply hypothetical scenario parameters (theta) to the clone.
-  3. Return the transformed (cloned) state.
 
-CRITICAL INVARIANT: the real Twin state must never be modified by a
-what-if scenario. This is enforced here by always operating on
-`state.clone()` (a deep copy - see TwinState.clone) and by this module
-never calling TwinStateStore.save() itself. Only the StateSynchronizer
-(driven by real events) is allowed to persist changes to the store.
-
-Supported scenarios reuse the same per-event-type transition logic as real
-events (via EventTransitionHandler), applied to the clone instead of the
-real state. This guarantees "what a scenario does" and "what the
-equivalent real event does" can never silently drift apart.
-"""
+"""Apply hypothetical events to isolated copies of real Twin states."""
 
 from __future__ import annotations
 
@@ -30,7 +14,7 @@ from twin_engine.state.twin_state import TwinState
 
 @dataclass
 class Scenario:
-    """A named what-if scenario: an event type plus its parameters."""
+    """Named what-if event and its parameters."""
 
     name: str
     event_type: EventType
@@ -47,16 +31,13 @@ class Scenario:
 
 
 class ScenarioTransformer:
-    """
-    Clones a Twin state and applies a hypothetical scenario to the clone.
-    NEVER mutates the real Twin.
-    """
+    """Transform a cloned state without access to persistence."""
 
     def __init__(self, transition_handler: EventTransitionHandler = event_transition_handler):
         self._transition_handler = transition_handler
 
     def transform(self, state: TwinState, scenario: Scenario) -> TwinState:
-        """Returns S'_t - a brand-new TwinState object, independent of `state`."""
+        """Return a transformed clone; the supplied state is never persisted or mutated."""
         cloned_state = state.clone()
 
         synthetic_event = Event(

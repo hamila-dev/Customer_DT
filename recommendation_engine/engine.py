@@ -1,28 +1,6 @@
-"""
-Recommendation Engine.
 
-Architecture (see docs/recommendation-engine.md):
 
-    Risk Intelligence
-           |
-           v
-    Driver Identifier
-           |
-           v
-    Action Lookup
-           |
-           v
-    Effect Estimator
-           |
-           v
-    Expected Value Ranker
-           |
-           v
-    Recommended Action
-
-This module is the thin orchestrator that calls the four components in
-order and returns the ranked list plus the top recommendation.
-"""
+"""Compose risk, driver, action, and expected-value ranking services."""
 
 from __future__ import annotations
 
@@ -40,6 +18,8 @@ import config
 
 @dataclass
 class RecommendationResult:
+    """Complete recommendation response for one customer."""
+
     customer_id: str
     risk: RiskResult
     top_drivers: List[Driver]
@@ -60,6 +40,8 @@ class RecommendationResult:
 
 
 class RecommendationEngine:
+    """Run the recommendation pipeline using injectable component services."""
+
     def __init__(
         self,
         predictor: ChurnPredictor = churn_predictor,
@@ -73,6 +55,7 @@ class RecommendationEngine:
         self._ranker = ranker
 
     def recommend(self, state: TwinState, customer_value: float = config.DEFAULT_CUSTOMER_VALUE) -> RecommendationResult:
+        """Score a Twin, identify drivers, and rank configured actions."""
         risk = self._predictor.predict(state)
         drivers = self._identifier.identify(state)
         candidate_actions = self._lookup.actions_for_drivers(drivers)

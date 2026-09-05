@@ -27,4 +27,4 @@ storage/
 # Logs
 *.log
 
-*.joblib
+model/*.joblib
